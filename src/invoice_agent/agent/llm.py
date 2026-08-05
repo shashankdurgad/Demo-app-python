@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -9,8 +10,23 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import httpx
+from overmind import (
+    SpanType,
+    entry_point,
+    force_flush_traces,
+    init,
+    observe,
+    set_agent_name,
+    set_tag,
+    workflow,
+)
 
 from invoice_agent.types import LlmExtraction
+
+if os.environ.get("OVERMIND_API_KEY"):
+    init(service_name="ledgerline-invoice-agent")
+    set_agent_name("Ledgerline Invoice Triage Agent")
+    atexit.register(force_flush_traces)
 
 SYSTEM_PROMPT = """You are Ledgerline, an accounting invoice triage agent.
 You ONLY decide from email content whether the message is a payable invoice / bill for accounting, and extract structured fields.
@@ -110,16 +126,78 @@ def _extract_json_object(content: str) -> Any:
     return json.loads(match.group(0))
 
 
-def analyze_email_with_llm(
+def _parts_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+    return [
+        {"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]}
+        for m in messages
+    ]
+
+
+@observe(type=SpanType.LLM)
+def _post_chat_completions(
     *,
+    endpoint: LlmEndpoint,
+    messages: list[dict[str, str]],
+    temperature: float,
+) -> httpx.Response:
+    set_tag("gen_ai.input.messages", json.dumps(_parts_messages(messages)))
+    set_tag("gen_ai.request.model", endpoint.model)
+    set_tag("gen_ai.request.temperature", temperature)
+    set_tag("gen_ai.request.response_format", "json_object")
+    set_tag("gen_ai.request.max_input_chars", 10000)
+    set_tag("gen_ai.system", endpoint.provider)
+
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(
+            endpoint.url,
+            headers=endpoint.headers,
+            json={
+                "model": endpoint.model,
+                "temperature": temperature,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            },
+        )
+
+    if response.status_code < 400:
+        data = response.json()
+        choices = data.get("choices") or []
+        raw_content = None
+        if choices:
+            raw_content = (choices[0].get("message") or {}).get("content")
+        if raw_content:
+            set_tag(
+                "gen_ai.output.messages",
+                json.dumps(
+                    [
+                        {
+                            "role": "assistant",
+                            "parts": [{"type": "text", "content": raw_content}],
+                        }
+                    ]
+                ),
+            )
+        usage = data.get("usage") or {}
+        if usage.get("prompt_tokens") is not None:
+            set_tag("gen_ai.usage.prompt_tokens", usage["prompt_tokens"])
+        if usage.get("completion_tokens") is not None:
+            set_tag("gen_ai.usage.completion_tokens", usage["completion_tokens"])
+        if usage.get("total_tokens") is not None:
+            set_tag("gen_ai.usage.total_tokens", usage["total_tokens"])
+
+    return response
+
+
+@workflow("per_email_extraction")
+def _per_email_extraction(
+    *,
+    endpoint: LlmEndpoint,
     subject: str,
     from_: str,
     date: str,
     text: str,
-) -> LlmExtraction:
-    endpoint = get_llm_endpoint()
-    temperature = 0
-
+    temperature: float,
+) -> httpx.Response:
     user_prompt = f"""Analyze this email for accounting invoice triage.
 
 Return ONLY valid JSON with exactly these keys:
@@ -149,18 +227,30 @@ Body / attachments text:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
+    return _post_chat_completions(
+        endpoint=endpoint, messages=messages, temperature=temperature
+    )
 
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(
-            endpoint.url,
-            headers=endpoint.headers,
-            json={
-                "model": endpoint.model,
-                "temperature": temperature,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-            },
-        )
+
+@entry_point("Ledgerline Invoice Triage Agent")
+def analyze_email_with_llm(
+    *,
+    subject: str,
+    from_: str,
+    date: str,
+    text: str,
+) -> LlmExtraction:
+    endpoint = get_llm_endpoint()
+    temperature = 0
+
+    response = _per_email_extraction(
+        endpoint=endpoint,
+        subject=subject,
+        from_=from_,
+        date=date,
+        text=text,
+        temperature=temperature,
+    )
 
     if response.status_code >= 400:
         error_text = response.text[:240] if response.text else response.reason_phrase
