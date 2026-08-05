@@ -1,0 +1,28 @@
+.PHONY: verify-agent run-20-emails run-100-emails run-250-emails run-themes run-eval-50 run-eval-50b dev install
+
+install:
+	pip install -e .
+
+verify-agent:
+	python -m scripts.verify_agent
+
+run-20-emails:
+	python -m scripts.run_20_emails
+
+run-100-emails:
+	python -m scripts.run_100_emails
+
+run-250-emails:
+	python -m scripts.run_250_emails
+
+run-themes:
+	python -m scripts.run_themes_corpus
+
+run-eval-50:
+	python -m scripts.run_eval_50
+
+run-eval-50b:
+	python -m scripts.run_eval_50b
+
+dev:
+	uvicorn invoice_agent.app:app --reload --host 127.0.0.1 --port 8000
