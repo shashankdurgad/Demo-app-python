@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ledgerline</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Source+Sans+3:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <div class="bg" aria-hidden="true"></div>
+      <div class="noise" aria-hidden="true"></div>
+
+      <main class="shell">
+        <header class="hero">
+          <div class="hero-copy">
+            <p class="brand">Ledgerline</p>
+            <h1>LLM invoice agent for your inbox</h1>
+            <p class="lede">
+              Grant read-only Gmail access. A language model triages each email
+              and extracts how much is owed and when payment is due.
+            </p>
+          </div>
+          <div class="hero-actions">
+            <p class="status-line" id="status-line">Loading…</p>
+            <div class="actions" id="actions"></div>
+          </div>
+        </header>
+
+        <div id="alert" class="alert" hidden></div>
+
+        <section class="stats" aria-label="Agent status">
+          <div class="stat accent">
+            <p class="stat-label">Emails scanned</p>
+            <p class="stat-value" id="stat-scanned">—</p>
+          </div>
+          <div class="stat">
+            <p class="stat-label">Invoices found</p>
+            <p class="stat-value" id="stat-invoices">—</p>
+          </div>
+          <div class="stat muted">
+            <p class="stat-label">Extracted total</p>
+            <p class="stat-value" id="stat-total">—</p>
+          </div>
+        </section>
+
+        <section aria-label="Invoice results">
+          <div class="section-head">
+            <div>
+              <h2>Invoice emails</h2>
+              <p class="section-sub">
+                Amount owed and payment due date for each invoice the LLM
+                identified.
+              </p>
+            </div>
+            <p class="llm-pill" id="llm-pill"></p>
+          </div>
+          <div id="results"></div>
+        </section>
+
+        <footer>
+          LLM-only triage and extraction. Gmail uses read-only scope
+          (<code>gmail.readonly</code>). Tokens stay in an encrypted local
+          session cookie. Configure <code>OPENAI_API_KEY</code> or
+          <code>OLLAMA_BASE_URL</code> in <code>.env.local</code>.
+        </footer>
+      </main>
+    </div>
+    <script>
+      window.__INITIAL_AUTH_ERROR__ = {{ (auth_error or "")|tojson }};
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
