@@ -8,9 +8,18 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import atexit
+
 import httpx
+import overmind
+from overmind import SpanType, entry_point, force_flush_traces, observe, set_tag, workflow
 
 from invoice_agent.types import LlmExtraction
+
+if os.environ.get("OVERMIND_API_KEY"):
+    overmind.init(service_name="ledgerline-invoice-agent")
+    overmind.set_agent_name("Ledgerline Invoice Triage Agent")
+    atexit.register(force_flush_traces)
 
 SYSTEM_PROMPT = """You are Ledgerline, an accounting invoice triage agent.
 You ONLY decide from email content whether the message is a payable invoice / bill for accounting, and extract structured fields.
@@ -99,6 +108,103 @@ def get_llm_status() -> dict[str, Any]:
     }
 
 
+def _parts_messages_json(messages: list[dict[str, str]]) -> str:
+    return json.dumps(
+        [
+            {"role": m["role"], "parts": [{"type": "text", "content": m["content"]}]}
+            for m in messages
+        ]
+    )
+
+
+@observe("chat_completions", type=SpanType.LLM)
+def _post_chat_completions(
+    *,
+    provider: str,
+    url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+) -> str:
+    set_tag("gen_ai.request.model", model)
+    set_tag("gen_ai.system", provider)
+    set_tag("gen_ai.request.temperature", temperature)
+    set_tag("gen_ai.request.response_format", "json_object")
+    set_tag("gen_ai.request.max_input_chars", 10000)
+    set_tag("gen_ai.input.messages", _parts_messages_json(messages))
+
+    endpoint = get_llm_endpoint()
+    with httpx.Client(timeout=120.0) as client:
+        response = client.post(
+            url,
+            headers=endpoint.headers,
+            json={
+                "model": model,
+                "temperature": temperature,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            },
+        )
+
+    if response.status_code >= 400:
+        error_text = response.text[:240] if response.text else response.reason_phrase
+        raise RuntimeError(
+            f"LLM request failed ({response.status_code}): {error_text}"
+        )
+
+    data = response.json()
+    choices = data.get("choices") or []
+    raw_content = None
+    if choices:
+        raw_content = (choices[0].get("message") or {}).get("content")
+
+    if not raw_content:
+        raise RuntimeError("LLM returned an empty response.")
+
+    set_tag(
+        "gen_ai.output.messages",
+        json.dumps(
+            [
+                {
+                    "role": "assistant",
+                    "parts": [{"type": "text", "content": raw_content}],
+                }
+            ]
+        ),
+    )
+    usage = data.get("usage") or {}
+    if usage.get("prompt_tokens") is not None:
+        set_tag("gen_ai.usage.prompt_tokens", usage["prompt_tokens"])
+    if usage.get("completion_tokens") is not None:
+        set_tag("gen_ai.usage.completion_tokens", usage["completion_tokens"])
+    if usage.get("total_tokens") is not None:
+        set_tag("gen_ai.usage.total_tokens", usage["total_tokens"])
+    set_tag("overmind.output.data", raw_content)
+    return raw_content
+
+
+@workflow("per_email_extraction")
+def _per_email_extraction(
+    *,
+    provider: str,
+    url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    harness_input: dict[str, Any],
+) -> str:
+    set_tag("overmind.input.data", harness_input)
+    raw_content = _post_chat_completions(
+        provider=provider,
+        url=url,
+        model=model,
+        messages=messages,
+        temperature=temperature,
+    )
+    set_tag("overmind.output.data", raw_content)
+    return raw_content
+
+
 def _extract_json_object(content: str) -> Any:
     trimmed = content.strip()
     if trimmed.startswith("{") and trimmed.endswith("}"):
@@ -110,6 +216,7 @@ def _extract_json_object(content: str) -> Any:
     return json.loads(match.group(0))
 
 
+@entry_point("Ledgerline Invoice Triage Agent")
 def analyze_email_with_llm(
     *,
     subject: str,
@@ -117,6 +224,14 @@ def analyze_email_with_llm(
     date: str,
     text: str,
 ) -> LlmExtraction:
+    harness_input = {
+        "subject": subject,
+        "from": from_,
+        "date": date,
+        "text_length": len(text),
+    }
+    set_tag("overmind.input.data", harness_input)
+
     endpoint = get_llm_endpoint()
     temperature = 0
 
@@ -150,32 +265,19 @@ Body / attachments text:
         {"role": "user", "content": user_prompt},
     ]
 
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(
-            endpoint.url,
-            headers=endpoint.headers,
-            json={
-                "model": endpoint.model,
-                "temperature": temperature,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-            },
-        )
-
-    if response.status_code >= 400:
-        error_text = response.text[:240] if response.text else response.reason_phrase
-        raise RuntimeError(
-            f"LLM request failed ({response.status_code}): {error_text}"
-        )
-
-    data = response.json()
-    choices = data.get("choices") or []
-    raw_content = None
-    if choices:
-        raw_content = (choices[0].get("message") or {}).get("content")
-
-    if not raw_content:
-        raise RuntimeError("LLM returned an empty response.")
+    raw_content = _per_email_extraction(
+        provider=endpoint.provider,
+        url=endpoint.url,
+        model=endpoint.model,
+        messages=messages,
+        temperature=temperature,
+        harness_input={
+            **harness_input,
+            "mode": "per_email_extraction",
+            "model": endpoint.model,
+            "provider": endpoint.provider,
+        },
+    )
 
     parsed = _extract_json_object(raw_content)
     if not isinstance(parsed, dict):
@@ -187,6 +289,8 @@ Body / attachments text:
         parsed["confidence"] = min(confidence / 100, 1)
 
     try:
-        return LlmExtraction.model_validate(parsed)
+        result = LlmExtraction.model_validate(parsed)
     except Exception as exc:
         raise RuntimeError(f"LLM returned invalid invoice JSON: {exc}") from exc
+    set_tag("overmind.output.data", result.model_dump())
+    return result
