@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import quote
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -62,8 +61,8 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/api/auth/google")
-async def auth_google() -> RedirectResponse | JSONResponse:
+@app.get("/api/auth/google", response_model=None)
+async def auth_google() -> Response:
     if not is_google_configured():
         return JSONResponse(
             {
