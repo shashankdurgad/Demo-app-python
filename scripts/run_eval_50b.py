@@ -19,6 +19,9 @@ def main() -> None:
     from invoice_agent.agent.llm import get_llm_status
     from invoice_agent.agent.triage import analyze_email
     from invoice_agent.eval_emails_b import EVAL_SCENARIOS_B_50
+    from invoice_agent.observability import init_langfuse
+
+    init_langfuse()
 
     if len(EVAL_SCENARIOS_B_50) != 50:
         print(

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Literal
 
 from invoice_agent.agent.llm import analyze_email_with_llm, require_llm_configured
+from invoice_agent.observability import get_langfuse, is_langfuse_configured
 from invoice_agent.types import InvoiceRecord, MoneyAmount, RawEmail
+
+# True while nested under a ledgerline agent observation (batch or single-email).
+_inside_ledgerline: ContextVar[bool] = ContextVar("inside_ledgerline", default=False)
 
 
 def _to_gmail_url(email_id: str, source: Literal["gmail", "demo"]) -> str:
@@ -31,10 +36,11 @@ def _received_at(date_str: str) -> str:
             return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def analyze_email(
+def _analyze_email_core(
     email: RawEmail,
     source: Literal["gmail", "demo"],
-) -> InvoiceRecord | None:
+) -> tuple[InvoiceRecord | None, dict]:
+    """Return (invoice_or_none, span_output) for tracing."""
     combined_text = "\n".join(
         filter(
             None,
@@ -50,7 +56,11 @@ def analyze_email(
     )
 
     if not llm.is_invoice:
-        return None
+        return None, {
+            "is_invoice": False,
+            "confidence": round(llm.confidence, 2),
+            "summary": llm.summary,
+        }
 
     currency = llm.currency or "USD"
     amount: MoneyAmount | None = None
@@ -61,7 +71,7 @@ def analyze_email(
             raw=f"{currency} {llm.amount}",
         )
 
-    return InvoiceRecord.model_validate(
+    record = InvoiceRecord.model_validate(
         {
             "id": f"{source}-{email.id}",
             "emailId": email.id,
@@ -79,19 +89,165 @@ def analyze_email(
             "source": source,
         }
     )
+    return record, {
+        "is_invoice": True,
+        "vendor": record.vendor,
+        "amount": record.amount.model_dump() if record.amount else None,
+        "due_date": record.due_date,
+        "invoice_number": record.invoice_number,
+        "confidence": record.confidence,
+    }
+
+
+def _analyze_email_span(
+    email: RawEmail,
+    source: Literal["gmail", "demo"],
+) -> InvoiceRecord | None:
+    langfuse = get_langfuse()
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="analyze-email",
+        input={
+            "email_id": email.id,
+            "subject": email.subject,
+            "from": email.from_,
+            "date": email.date,
+            "source": source,
+        },
+        metadata={"email_id": email.id, "source": source},
+    ) as span:
+        record, span_output = _analyze_email_core(email, source)
+        span.update(output=span_output)
+        return record
+
+
+def analyze_email(
+    email: RawEmail,
+    source: Literal["gmail", "demo"],
+) -> InvoiceRecord | None:
+    if not is_langfuse_configured():
+        record, _ = _analyze_email_core(email, source)
+        return record
+
+    # Already under run_invoice_agent → nest span only.
+    if _inside_ledgerline.get():
+        return _analyze_email_span(email, source)
+
+    # Standalone script/eval call → ledgerline must be the root.
+    from langfuse import propagate_attributes
+
+    langfuse = get_langfuse()
+    token = _inside_ledgerline.set(True)
+    try:
+        with langfuse.start_as_current_observation(
+            as_type="agent",
+            name="ledgerline",
+            input={
+                "mode": source,
+                "email_count": 1,
+                "email_id": email.id,
+                "subject": email.subject,
+            },
+            metadata={
+                "source": source,
+                "feature": "analyze-email",
+                "agent": "ledgerline",
+                "email_id": email.id,
+            },
+        ) as agent:
+            with propagate_attributes(
+                tags=["ledgerline", f"mode:{source}"],
+                metadata={
+                    "source": source,
+                    "agent": "ledgerline",
+                    "email_id": email.id,
+                },
+                trace_name="ledgerline",
+            ):
+                record = _analyze_email_span(email, source)
+            if record is None:
+                agent.update(output={"is_invoice": False, "invoice_count": 0})
+            else:
+                agent.update(
+                    output={
+                        "is_invoice": True,
+                        "invoice_count": 1,
+                        "vendor": record.vendor,
+                        "amount": record.amount.model_dump() if record.amount else None,
+                        "due_date": record.due_date,
+                        "confidence": record.confidence,
+                    }
+                )
+            return record
+    finally:
+        _inside_ledgerline.reset(token)
 
 
 def run_invoice_agent(
     emails: list[RawEmail],
     source: Literal["gmail", "demo"],
+    *,
+    user_id: str | None = None,
 ) -> list[InvoiceRecord]:
     require_llm_configured()
 
-    invoices: list[InvoiceRecord] = []
-    for email in emails:
-        record = analyze_email(email, source)
-        if record is not None:
-            invoices.append(record)
+    def _run_scan() -> list[InvoiceRecord]:
+        invoices: list[InvoiceRecord] = []
+        for email in emails:
+            record = analyze_email(email, source)
+            if record is not None:
+                invoices.append(record)
+        invoices.sort(key=lambda inv: inv.due_date or "9999-12-31")
+        return invoices
 
-    invoices.sort(key=lambda inv: inv.due_date or "9999-12-31")
-    return invoices
+    if not is_langfuse_configured():
+        return _run_scan()
+
+    from langfuse import propagate_attributes
+
+    langfuse = get_langfuse()
+    tags = ["ledgerline", "invoice-scan", f"mode:{source}"]
+    attr_kwargs: dict = {
+        "tags": tags,
+        "metadata": {
+            "source": source,
+            "email_count": len(emails),
+            "feature": "invoice-scan",
+            "agent": "ledgerline",
+        },
+        "trace_name": "ledgerline",
+    }
+    if user_id:
+        attr_kwargs["user_id"] = user_id
+
+    token = _inside_ledgerline.set(True)
+    try:
+        with langfuse.start_as_current_observation(
+            as_type="agent",
+            name="ledgerline",
+            input={"mode": source, "email_count": len(emails)},
+            metadata={
+                "source": source,
+                "feature": "invoice-scan",
+                "agent": "ledgerline",
+            },
+        ) as root:
+            with propagate_attributes(**attr_kwargs):
+                invoices = _run_scan()
+            root.update(
+                output={
+                    "invoice_count": len(invoices),
+                    "invoices": [
+                        {
+                            "vendor": inv.vendor,
+                            "amount": inv.amount.model_dump() if inv.amount else None,
+                            "due_date": inv.due_date,
+                            "confidence": inv.confidence,
+                        }
+                        for inv in invoices
+                    ],
+                }
+            )
+            return invoices
+    finally:
+        _inside_ledgerline.reset(token)

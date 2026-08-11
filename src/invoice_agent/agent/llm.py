@@ -8,8 +8,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import httpx
+from openai import OpenAI
 
+from invoice_agent.observability import is_langfuse_configured
 from invoice_agent.types import LlmExtraction
 
 SYSTEM_PROMPT = """You are Ledgerline, an accounting invoice triage agent.
@@ -43,9 +44,9 @@ Return JSON only. No markdown."""
 @dataclass(frozen=True)
 class LlmEndpoint:
     provider: Literal["openai", "ollama"]
-    url: str
+    base_url: str
     model: str
-    headers: dict[str, str]
+    api_key: str
 
 
 def is_llm_configured() -> bool:
@@ -61,29 +62,37 @@ def require_llm_configured() -> None:
     )
 
 
+def _openai_compatible_base_url(raw: str) -> str:
+    """Normalize chat-completions URLs to an OpenAI client base_url (.../v1)."""
+    base = raw.rstrip("/")
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    return base
+
+
 def get_llm_endpoint() -> LlmEndpoint:
     require_llm_configured()
 
     if os.environ.get("OPENAI_API_KEY"):
+        raw = os.environ.get(
+            "OPENAI_BASE_URL",
+            "https://api.openai.com/v1",
+        )
         return LlmEndpoint(
             provider="openai",
-            url=os.environ.get(
-                "OPENAI_BASE_URL",
-                "https://api.openai.com/v1/chat/completions",
-            ),
+            base_url=_openai_compatible_base_url(raw),
             model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-            },
+            api_key=os.environ["OPENAI_API_KEY"],
         )
 
-    base = (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/")
+    ollama_base = (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip(
+        "/"
+    )
     return LlmEndpoint(
         provider="ollama",
-        url=f"{base}/v1/chat/completions",
+        base_url=f"{ollama_base}/v1",
         model=os.environ.get("OLLAMA_MODEL", "llama3.2"),
-        headers={"Content-Type": "application/json"},
+        api_key="ollama",
     )
 
 
@@ -97,6 +106,26 @@ def get_llm_status() -> dict[str, Any]:
         "provider": endpoint.provider,
         "model": endpoint.model,
     }
+
+
+def _get_openai_client(endpoint: LlmEndpoint) -> OpenAI:
+    """Build an OpenAI client; use Langfuse drop-in when tracing is configured."""
+    if is_langfuse_configured():
+        from invoice_agent.observability import init_langfuse
+        from langfuse.openai import OpenAI as LangfuseOpenAI
+
+        init_langfuse()
+        return LangfuseOpenAI(
+            api_key=endpoint.api_key,
+            base_url=endpoint.base_url,
+            timeout=120.0,
+        )
+
+    return OpenAI(
+        api_key=endpoint.api_key,
+        base_url=endpoint.base_url,
+        timeout=120.0,
+    )
 
 
 def _extract_json_object(content: str) -> Any:
@@ -150,29 +179,28 @@ Body / attachments text:
         {"role": "user", "content": user_prompt},
     ]
 
-    with httpx.Client(timeout=120.0) as client:
-        response = client.post(
-            endpoint.url,
-            headers=endpoint.headers,
-            json={
-                "model": endpoint.model,
-                "temperature": temperature,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-            },
-        )
+    client = _get_openai_client(endpoint)
+    create_kwargs: dict[str, Any] = {
+        "model": endpoint.model,
+        "temperature": temperature,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+    }
+    if is_langfuse_configured():
+        create_kwargs["name"] = "classify-invoice"
+        create_kwargs["metadata"] = {
+            "provider": endpoint.provider,
+            "langfuse_tags": ["invoice-triage"],
+        }
 
-    if response.status_code >= 400:
-        error_text = response.text[:240] if response.text else response.reason_phrase
-        raise RuntimeError(
-            f"LLM request failed ({response.status_code}): {error_text}"
-        )
+    try:
+        response = client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        raise RuntimeError(f"LLM request failed: {exc}") from exc
 
-    data = response.json()
-    choices = data.get("choices") or []
     raw_content = None
-    if choices:
-        raw_content = (choices[0].get("message") or {}).get("content")
+    if response.choices:
+        raw_content = response.choices[0].message.content
 
     if not raw_content:
         raise RuntimeError("LLM returned an empty response.")

@@ -24,13 +24,15 @@ from invoice_agent.gmail import (
     get_auth_url,
     is_google_configured,
 )
+from invoice_agent.observability import init_langfuse, is_langfuse_configured
 from invoice_agent.session import clear_session, read_session, write_session
 from invoice_agent.types import AuthStatus, ScanResult
 
-# Load .env.local then .env (local overrides)
+# Load .env.local then .env (local overrides) BEFORE Langfuse init
 _ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_ROOT / ".env")
 load_dotenv(_ROOT / ".env.local", override=True)
+init_langfuse()
 
 TEMPLATES_DIR = _ROOT / "templates"
 STATIC_DIR = _ROOT / "static"
@@ -130,7 +132,9 @@ async def auth_status(request: Request) -> JSONResponse:
             "googleConfigured": is_google_configured(),
         }
     )
-    return JSONResponse(status.model_dump(by_alias=True))
+    payload = status.model_dump(by_alias=True)
+    payload["langfuseConfigured"] = is_langfuse_configured()
+    return JSONResponse(payload)
 
 
 @app.post("/api/scan")
@@ -156,7 +160,7 @@ async def scan(request: Request) -> JSONResponse:
 
     try:
         if mode == "demo":
-            invoices = run_invoice_agent(DEMO_EMAILS, "demo")
+            invoices = run_invoice_agent(DEMO_EMAILS, "demo", user_id="demo")
             result = ScanResult.model_validate(
                 {
                     "scanned": len(DEMO_EMAILS),
@@ -181,7 +185,12 @@ async def scan(request: Request) -> JSONResponse:
 
         max_results = body.maxResults if body.maxResults is not None else 25
         emails = fetch_candidate_emails(tokens, max_results=max_results)
-        invoices = run_invoice_agent(emails, "gmail")
+        user_email = session.get("email")
+        invoices = run_invoice_agent(
+            emails,
+            "gmail",
+            user_id=user_email if isinstance(user_email, str) else None,
+        )
         result = ScanResult.model_validate(
             {
                 "scanned": len(emails),

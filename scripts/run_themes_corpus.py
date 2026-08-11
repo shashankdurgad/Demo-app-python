@@ -23,11 +23,14 @@ def main() -> None:
         os.environ.pop("OPENAI_API_KEY", None)
 
     from invoice_agent.agent.llm import get_llm_status
+    from invoice_agent.observability import init_langfuse
     from invoice_agent.themes_corpus import (
         analyze_themes_email,
         generate_themes_corpus,
         tally_modes,
     )
+
+    init_langfuse()
 
     count = int(os.environ.get("THEMES_EMAIL_COUNT") or 1200)
     concurrency = max(1, int(os.environ.get("THEMES_CONCURRENCY") or 8))

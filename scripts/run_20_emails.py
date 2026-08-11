@@ -19,6 +19,9 @@ def main() -> None:
     from invoice_agent.agent.llm import get_llm_status
     from invoice_agent.agent.triage import analyze_email
     from invoice_agent.demo_emails import DEMO_EMAILS
+    from invoice_agent.observability import flush_langfuse, init_langfuse
+
+    init_langfuse()
 
     if len(DEMO_EMAILS) != 20:
         print(
@@ -39,6 +42,7 @@ def main() -> None:
             record = analyze_email(email, "demo")
         except Exception as err:
             print(f"Hard failure on {email.id}: {err}", file=sys.stderr)
+            flush_langfuse()
             sys.exit(1)
 
         row = {
@@ -56,6 +60,7 @@ def main() -> None:
     print(f"  Scanned: {len(DEMO_EMAILS)}")
     print(f"  Classified as invoices: {len(invoice_rows)}")
     print(f"  Rejected / non-invoices: {len(DEMO_EMAILS) - len(invoice_rows)}")
+    flush_langfuse()
     sys.exit(0)
 
 

@@ -20,6 +20,9 @@ def main() -> None:
     from invoice_agent.agent.llm import get_llm_status
     from invoice_agent.agent.triage import analyze_email
     from invoice_agent.generate_demo_emails import generate_demo_emails
+    from invoice_agent.observability import init_langfuse
+
+    init_langfuse()
 
     count = int(os.environ.get("DEMO_EMAIL_COUNT") or 250)
     emails = generate_demo_emails(count)

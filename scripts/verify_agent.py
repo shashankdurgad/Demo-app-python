@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,9 @@ from unittest.mock import MagicMock, patch
 def main() -> None:
     os.environ["OPENAI_API_KEY"] = "test-key"
     os.environ["OPENAI_MODEL"] = "gpt-4o-mini"
+    # Keep unit check offline — do not send traces.
+    os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
+    os.environ.pop("LANGFUSE_SECRET_KEY", None)
 
     responses = {
         "demo-1": {
@@ -69,32 +73,28 @@ def main() -> None:
     call_index = 0
     demo_order = ["demo-1", "demo-2", "demo-3", "demo-4", "demo-5"]
 
-    def fake_post(url: str, **kwargs: Any) -> MagicMock:
+    def fake_create(**_kwargs: Any) -> Any:
         nonlocal call_index
         email_id = demo_order[call_index] if call_index < len(demo_order) else "demo-3"
         call_index += 1
         payload = responses[email_id]
-        mock = MagicMock()
-        mock.status_code = 200
-        mock.text = ""
-        mock.reason_phrase = "OK"
-        mock.json.return_value = {
-            "choices": [{"message": {"content": json.dumps(payload)}}]
-        }
-        return mock
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(payload))
+                )
+            ]
+        )
 
     # Ensure package imports resolve
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
     if root not in sys.path:
         sys.path.insert(0, root)
 
-    with patch("httpx.Client") as client_cls:
-        client = MagicMock()
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-        client.post.side_effect = fake_post
-        client_cls.return_value = client
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = fake_create
 
+    with patch("invoice_agent.agent.llm.OpenAI", return_value=mock_client):
         from invoice_agent.agent.llm import is_llm_configured, require_llm_configured
         from invoice_agent.agent.triage import run_invoice_agent
         from invoice_agent.demo_emails import DEMO_EMAILS
