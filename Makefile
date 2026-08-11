@@ -1,10 +1,13 @@
-.PHONY: verify-agent run-20-emails run-100-emails run-250-emails run-themes run-eval-50 run-eval-50b dev install
+.PHONY: verify-agent run-both-agents run-20-emails run-100-emails run-250-emails run-themes run-eval-50 run-eval-50b dev install
 
 install:
 	pip install -e .
 
 verify-agent:
 	python -m scripts.verify_agent
+
+run-both-agents:
+	python -m scripts.run_both_agents
 
 run-20-emails:
 	python -m scripts.run_20_emails

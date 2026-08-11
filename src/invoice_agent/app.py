@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from invoice_agent.agent.llm import get_llm_status, is_llm_configured
-from invoice_agent.agent.triage import run_invoice_agent
+from invoice_agent.agent.triage import run_ledgerline
 from invoice_agent.demo_emails import DEMO_EMAILS
 from invoice_agent.gmail import (
     exchange_code_for_tokens,
@@ -160,11 +160,12 @@ async def scan(request: Request) -> JSONResponse:
 
     try:
         if mode == "demo":
-            invoices = run_invoice_agent(DEMO_EMAILS, "demo", user_id="demo")
+            run = run_ledgerline(DEMO_EMAILS, "demo", user_id="demo")
             result = ScanResult.model_validate(
                 {
                     "scanned": len(DEMO_EMAILS),
-                    "invoices": invoices,
+                    "invoices": run.invoices,
+                    "plan": run.plan,
                     "mode": "demo",
                     "scannedAt": datetime.now(timezone.utc)
                     .isoformat()
@@ -186,7 +187,7 @@ async def scan(request: Request) -> JSONResponse:
         max_results = body.maxResults if body.maxResults is not None else 25
         emails = fetch_candidate_emails(tokens, max_results=max_results)
         user_email = session.get("email")
-        invoices = run_invoice_agent(
+        run = run_ledgerline(
             emails,
             "gmail",
             user_id=user_email if isinstance(user_email, str) else None,
@@ -194,7 +195,8 @@ async def scan(request: Request) -> JSONResponse:
         result = ScanResult.model_validate(
             {
                 "scanned": len(emails),
-                "invoices": invoices,
+                "invoices": run.invoices,
+                "plan": run.plan,
                 "mode": "gmail",
                 "scannedAt": datetime.now(timezone.utc)
                 .isoformat()

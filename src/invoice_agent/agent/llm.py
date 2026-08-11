@@ -139,6 +139,52 @@ def _extract_json_object(content: str) -> Any:
     return json.loads(match.group(0))
 
 
+def chat_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    observation_name: str,
+    tags: list[str],
+    temperature: float = 0,
+) -> dict:
+    """Run one JSON-mode chat completion and return the parsed object."""
+    endpoint = get_llm_endpoint()
+    client = _get_openai_client(endpoint)
+
+    create_kwargs: dict[str, Any] = {
+        "model": endpoint.model,
+        "temperature": temperature,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    if is_langfuse_configured():
+        create_kwargs["name"] = observation_name
+        create_kwargs["metadata"] = {
+            "provider": endpoint.provider,
+            "langfuse_tags": tags,
+        }
+
+    try:
+        response = client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        raise RuntimeError(f"LLM request failed: {exc}") from exc
+
+    raw_content = None
+    if response.choices:
+        raw_content = response.choices[0].message.content
+
+    if not raw_content:
+        raise RuntimeError("LLM returned an empty response.")
+
+    parsed = _extract_json_object(raw_content)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("LLM returned invalid JSON: not an object")
+    return parsed
+
+
 def analyze_email_with_llm(
     *,
     subject: str,
@@ -146,9 +192,6 @@ def analyze_email_with_llm(
     date: str,
     text: str,
 ) -> LlmExtraction:
-    endpoint = get_llm_endpoint()
-    temperature = 0
-
     user_prompt = f"""Analyze this email for accounting invoice triage.
 
 Return ONLY valid JSON with exactly these keys:
@@ -174,40 +217,12 @@ From: {from_}
 Body / attachments text:
 {text[:10000]}"""
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
-
-    client = _get_openai_client(endpoint)
-    create_kwargs: dict[str, Any] = {
-        "model": endpoint.model,
-        "temperature": temperature,
-        "messages": messages,
-        "response_format": {"type": "json_object"},
-    }
-    if is_langfuse_configured():
-        create_kwargs["name"] = "classify-invoice"
-        create_kwargs["metadata"] = {
-            "provider": endpoint.provider,
-            "langfuse_tags": ["invoice-triage"],
-        }
-
-    try:
-        response = client.chat.completions.create(**create_kwargs)
-    except Exception as exc:
-        raise RuntimeError(f"LLM request failed: {exc}") from exc
-
-    raw_content = None
-    if response.choices:
-        raw_content = response.choices[0].message.content
-
-    if not raw_content:
-        raise RuntimeError("LLM returned an empty response.")
-
-    parsed = _extract_json_object(raw_content)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("LLM returned invalid invoice JSON: not an object")
+    parsed = chat_json(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        observation_name="classify-invoice",
+        tags=["invoice-triage"],
+    )
 
     # Some models return confidence as 0–100; normalize to 0–1 for the schema.
     confidence = parsed.get("confidence")

@@ -30,6 +30,7 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 verify-agent = "scripts.verify_agent:main"
+run-both-agents = "scripts.run_both_agents:main"
 run-20-emails = "scripts.run_20_emails:main"
 run-100-emails = "scripts.run_100_emails:main"
 run-250-emails = "scripts.run_250_emails:main"

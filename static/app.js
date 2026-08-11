@@ -142,6 +142,85 @@
     }
   };
 
+  const PRIORITY_LABELS = {
+    pay_now: "Pay now",
+    schedule: "Schedule",
+    hold: "Hold",
+  };
+
+  const priorityBadge = (priority) => {
+    if (!priority) return "—";
+    const label = PRIORITY_LABELS[priority] || priority;
+    return `<span class="badge ${escapeHtml(priority)}">${escapeHtml(label)}</span>`;
+  };
+
+  const renderPlan = () => {
+    const box = el("plan");
+    const plan = result?.plan;
+
+    if (!result) {
+      box.innerHTML = `<p class="empty">The planner agent runs after each scan.</p>`;
+      return;
+    }
+    if (!plan || plan.items.length === 0) {
+      box.innerHTML = `<p class="empty">${escapeHtml(plan?.summary || "No payment plan for this scan.")}</p>`;
+      return;
+    }
+
+    const totals = plan.totals
+      .map((total) => {
+        try {
+          return new Intl.NumberFormat(undefined, {
+            style: "currency",
+            currency: total.currency,
+          }).format(total.value);
+        } catch {
+          return `${total.currency} ${total.value.toFixed(2)}`;
+        }
+      })
+      .join(" · ");
+
+    const flags = plan.riskFlags.length
+      ? `<ul class="flags">${plan.riskFlags
+          .map((flag) => `<li>${escapeHtml(flag)}</li>`)
+          .join("")}</ul>`
+      : "";
+
+    const byId = new Map((result.invoices || []).map((inv) => [inv.id, inv]));
+    const rows = plan.items
+      .map((item) => {
+        const invoice = byId.get(item.invoiceId);
+        return `<tr>
+          <td>${priorityBadge(item.priority)}</td>
+          <td><p class="vendor">${escapeHtml(item.vendor)}</p></td>
+          <td class="amount">${escapeHtml(invoice ? formatMoney(invoice) : "—")}</td>
+          <td>${escapeHtml(formatDate(item.payBy))}</td>
+          <td>${escapeHtml(item.reason)}</td>
+        </tr>`;
+      })
+      .join("");
+
+    box.innerHTML = `<div class="plan-card">
+      <p class="plan-summary">${escapeHtml(plan.summary)}</p>
+      <p class="meta">Total extracted: ${escapeHtml(totals || "—")}</p>
+      ${flags}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Priority</th>
+            <th scope="col">Vendor</th>
+            <th scope="col">Amount</th>
+            <th scope="col">Pay by</th>
+            <th scope="col">Why</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  };
+
   const renderResults = () => {
     const pill = el("llm-pill");
     if (status.hasLlm) {
@@ -220,6 +299,7 @@
     setAlert();
     renderActions();
     renderStats();
+    renderPlan();
     renderResults();
   };
 

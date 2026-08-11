@@ -45,11 +45,48 @@ class InvoiceRecord(BaseModel):
     source: Literal["gmail", "demo"]
 
 
+Priority = Literal["pay_now", "schedule", "hold"]
+
+
+class PaymentPlanItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    invoice_id: str = Field(alias="invoiceId")
+    vendor: str
+    priority: Priority
+    pay_by: str | None = Field(default=None, alias="payBy")
+    reason: str
+
+
+class CurrencyTotal(BaseModel):
+    currency: str
+    value: float
+
+
+class PaymentPlan(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    items: list[PaymentPlanItem] = Field(default_factory=list)
+    totals: list[CurrencyTotal] = Field(default_factory=list)
+    summary: str
+    risk_flags: list[str] = Field(default_factory=list, alias="riskFlags")
+    planned_count: int = Field(default=0, alias="plannedCount")
+    source: Literal["llm", "fallback", "empty"] = "llm"
+
+
+class LedgerlineResult(BaseModel):
+    """Combined output of the triage and planner agents for one run."""
+
+    invoices: list[InvoiceRecord]
+    plan: PaymentPlan
+
+
 class ScanResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     scanned: int
     invoices: list[InvoiceRecord]
+    plan: PaymentPlan | None = None
     mode: Literal["gmail", "demo"]
     scanned_at: str = Field(alias="scannedAt")
 
@@ -76,3 +113,20 @@ class LlmExtraction(BaseModel):
     invoice_number: str | None = Field(default=None, alias="invoiceNumber")
     summary: str | None = None
     confidence: float = Field(ge=0, le=1)
+
+
+class LlmPlanItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    invoice_id: str = Field(alias="invoiceId")
+    priority: Priority
+    pay_by: str | None = Field(default=None, alias="payBy")
+    reason: str | None = None
+
+
+class LlmPaymentPlan(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    items: list[LlmPlanItem] = Field(default_factory=list)
+    summary: str | None = None
+    risk_flags: list[str] = Field(default_factory=list, alias="riskFlags")

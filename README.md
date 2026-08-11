@@ -62,17 +62,32 @@ Requested scopes:
 
 Tokens are stored in an encrypted httpOnly session cookie on your machine.
 
-## How the agent works
+## How the agents work
+
+Two agents run in sequence on every scan.
+
+**1. Invoice triage** (`invoice_agent.agent.triage`)
 
 1. Loads recent inbox emails (+ PDF attachment text when present), or the demo corpus
 2. Sends each email to the LLM for triage + extraction (one chat completion, `temperature=0`, JSON object)
 3. Keeps only messages the model marks as payable invoices
 4. Shows vendor, amount, due date, invoice number, and confidence
 
+**2. Payment planner** (`invoice_agent.agent.planner`)
+
+1. Takes the invoices triage extracted and sends them to the LLM in one call
+2. Ranks each invoice as `pay_now`, `schedule`, or `hold` with a `payBy` date and a reason
+3. Adds portfolio-level risk flags (duplicates, missing fields, large exposure)
+4. Totals per currency are summed in Python, never by the model
+
+The planner never fails a scan: if its call or JSON is unusable, it falls back to
+deterministic due-date rules and marks the plan `source` as `fallback`.
+
 ## Scripts
 
 ```bash
 verify-agent      # mocked LLM unit check (no network)
+run-both-agents   # triage + payment planner over the demo corpus (--limit N, --json)
 run-20-emails     # handcrafted demo corpus through analyze_email
 run-100-emails    # generated corpus (DEMO_EMAIL_COUNT or 100)
 run-250-emails    # generated corpus (DEMO_EMAIL_COUNT or 250)
@@ -86,7 +101,7 @@ Or via module:
 
 ```bash
 python -m scripts.verify_agent
-python -m scripts.run_20_emails
+python -m scripts.run_both_agents --limit 6
 ```
 
 ## API

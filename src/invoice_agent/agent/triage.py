@@ -1,4 +1,4 @@
-"""Invoice triage pipeline — one LLM call per email."""
+"""Ledgerline agent flow — an invoice-triage agent feeding a payment-planner agent."""
 
 from __future__ import annotations
 
@@ -7,8 +7,14 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from invoice_agent.agent.llm import analyze_email_with_llm, require_llm_configured
+from invoice_agent.agent.planner import plan_payments
 from invoice_agent.observability import get_langfuse, is_langfuse_configured
-from invoice_agent.types import InvoiceRecord, MoneyAmount, RawEmail
+from invoice_agent.types import (
+    InvoiceRecord,
+    LedgerlineResult,
+    MoneyAmount,
+    RawEmail,
+)
 
 # True while nested under a ledgerline agent observation (batch or single-email).
 _inside_ledgerline: ContextVar[bool] = ContextVar("inside_ledgerline", default=False)
@@ -251,3 +257,14 @@ def run_invoice_agent(
             return invoices
     finally:
         _inside_ledgerline.reset(token)
+
+
+def run_ledgerline(
+    emails: list[RawEmail],
+    source: Literal["gmail", "demo"],
+    *,
+    user_id: str | None = None,
+) -> LedgerlineResult:
+    """Both agents in sequence: triage extracts invoices, the planner prioritizes them."""
+    invoices = run_invoice_agent(emails, source, user_id=user_id)
+    return LedgerlineResult(invoices=invoices, plan=plan_payments(invoices))

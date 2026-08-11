@@ -70,14 +70,39 @@ def main() -> None:
         },
     }
 
+    plan_response = {
+        "items": [
+            {
+                "invoiceId": "demo-demo-5",
+                "priority": "pay_now",
+                "payBy": "2026-07-16",
+                "reason": "Cloudhost is due first.",
+            },
+            {
+                "invoiceId": "demo-demo-2",
+                "priority": "schedule",
+                "payBy": "2026-07-20",
+                "reason": "AWS has room before the due date.",
+            },
+        ],
+        "summary": "Pay Cloudhost first, then AWS and Northwind.",
+        "riskFlags": ["Northwind invoice is the largest exposure."],
+    }
+
     call_index = 0
     demo_order = ["demo-1", "demo-2", "demo-3", "demo-4", "demo-5"]
 
-    def fake_create(**_kwargs: Any) -> Any:
+    def fake_create(**kwargs: Any) -> Any:
         nonlocal call_index
-        email_id = demo_order[call_index] if call_index < len(demo_order) else "demo-3"
-        call_index += 1
-        payload = responses[email_id]
+        messages = kwargs.get("messages") or [{}]
+        if "Ledgerline Planner" in (messages[0].get("content") or ""):
+            payload: Any = plan_response
+        else:
+            email_id = (
+                demo_order[call_index] if call_index < len(demo_order) else "demo-3"
+            )
+            call_index += 1
+            payload = responses[email_id]
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -96,14 +121,17 @@ def main() -> None:
 
     with patch("invoice_agent.agent.llm.OpenAI", return_value=mock_client):
         from invoice_agent.agent.llm import is_llm_configured, require_llm_configured
-        from invoice_agent.agent.triage import run_invoice_agent
+        from invoice_agent.agent.triage import run_ledgerline
         from invoice_agent.demo_emails import DEMO_EMAILS
 
         assert is_llm_configured() is True
         require_llm_configured()
 
         # Mock only covers the first 5 emails; later calls fall back to demo-3 (non-invoice).
-        invoices = run_invoice_agent(DEMO_EMAILS, "demo")
+        run = run_ledgerline(DEMO_EMAILS, "demo")
+
+    invoices = run.invoices
+    plan = run.plan
 
     assert len(invoices) == 3, f"expected 3 invoices, got {len(invoices)}"
     assert not any("Team lunch" in inv.subject for inv in invoices)
@@ -113,6 +141,15 @@ def main() -> None:
     northwind = next(inv for inv in invoices if inv.vendor == "Northwind")
     assert northwind.amount is not None
     assert northwind.amount.value == 1240.5
+
+    # Planner agent: every invoice gets a verdict, even the ones the LLM skipped.
+    assert plan.source == "llm", f"expected an LLM plan, got {plan.source}"
+    assert len(plan.items) == len(invoices)
+    assert {item.invoice_id for item in plan.items} == {inv.id for inv in invoices}
+    assert plan.items[0].priority == "pay_now"
+    assert plan.risk_flags
+    totals = {total.currency: total.value for total in plan.totals}
+    assert totals == {"EUR": 890.0, "GBP": 1240.5, "USD": 312.88}, totals
 
     print(
         "LLM agent verification passed:",
@@ -124,6 +161,21 @@ def main() -> None:
             }
             for inv in invoices
         ],
+    )
+    print(
+        "Payment planner verification passed:",
+        {
+            "summary": plan.summary,
+            "items": [
+                {
+                    "vendor": item.vendor,
+                    "priority": item.priority,
+                    "payBy": item.pay_by,
+                }
+                for item in plan.items
+            ],
+            "totals": totals,
+        },
     )
 
 

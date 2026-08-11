@@ -23,8 +23,9 @@
             <p class="brand">Ledgerline</p>
             <h1>LLM invoice agent for your inbox</h1>
             <p class="lede">
-              Grant read-only Gmail access. A language model triages each email
-              and extracts how much is owed and when payment is due.
+              Grant read-only Gmail access. A triage agent reads every email and
+              extracts what is owed, then a planner agent decides what to pay
+              first.
             </p>
           </div>
           <div class="hero-actions">
@@ -48,6 +49,19 @@
             <p class="stat-label">Extracted total</p>
             <p class="stat-value" id="stat-total">—</p>
           </div>
+        </section>
+
+        <section aria-label="Payment plan">
+          <div class="section-head">
+            <div>
+              <h2>Payment plan</h2>
+              <p class="section-sub">
+                The planner agent ranks every extracted invoice into pay now,
+                schedule, or hold.
+              </p>
+            </div>
+          </div>
+          <div id="plan"></div>
         </section>
 
         <section aria-label="Invoice results">
