@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Literal
 
+from invoice_agent import __version__
 from invoice_agent.agent.llm import analyze_email_with_llm, require_llm_configured
 from invoice_agent.agent.planner import plan_payments
 from invoice_agent.observability import get_langfuse, is_langfuse_configured
@@ -16,8 +17,14 @@ from invoice_agent.types import (
     RawEmail,
 )
 
-# True while nested under a ledgerline agent observation (batch or single-email).
+# True while nested under a root agent observation (batch or single-email).
 _inside_ledgerline: ContextVar[bool] = ContextVar("inside_ledgerline", default=False)
+
+# Tags identifying the agent that produced an observation, kept in sync with the agent
+# observation names. Each agent gets both a prefixed tag (for filtering in Langfuse) and
+# a bare one, since importers that treat `prefix:value` as internal drop the former.
+AGENT_TAGS_TRIAGE = ["agent:triage-invoices", "triage-invoices"]
+AGENT_TAGS_TRIAGE_EMAIL = ["agent:triage-email", "triage-email"]
 
 
 def _to_gmail_url(email_id: str, source: Literal["gmail", "demo"]) -> str:
@@ -114,11 +121,10 @@ def _analyze_email_span(
         as_type="span",
         name="analyze-email",
         input={
-            "email_id": email.id,
             "subject": email.subject,
             "from": email.from_,
             "date": email.date,
-            "source": source,
+            "body": email.snippet or email.body_text,
         },
         metadata={"email_id": email.id, "source": source},
     ) as span:
@@ -135,11 +141,11 @@ def analyze_email(
         record, _ = _analyze_email_core(email, source)
         return record
 
-    # Already under run_invoice_agent → nest span only.
+    # Already under a root agent (scan or eval) → nest a span only.
     if _inside_ledgerline.get():
         return _analyze_email_span(email, source)
 
-    # Standalone script/eval call → ledgerline must be the root.
+    # Standalone script/eval call → this email is the whole unit of work.
     from langfuse import propagate_attributes
 
     langfuse = get_langfuse()
@@ -147,44 +153,150 @@ def analyze_email(
     try:
         with langfuse.start_as_current_observation(
             as_type="agent",
-            name="ledgerline",
+            name="triage-email",
             input={
-                "mode": source,
-                "email_count": 1,
-                "email_id": email.id,
                 "subject": email.subject,
+                "from": email.from_,
+                "date": email.date,
+                "body": email.snippet or email.body_text,
             },
-            metadata={
-                "source": source,
-                "feature": "analyze-email",
-                "agent": "ledgerline",
-                "email_id": email.id,
-            },
+            metadata={"source": source, "email_id": email.id},
         ) as agent:
             with propagate_attributes(
-                tags=["ledgerline", f"mode:{source}"],
-                metadata={
-                    "source": source,
-                    "agent": "ledgerline",
-                    "email_id": email.id,
-                },
-                trace_name="ledgerline",
-            ):
-                record = _analyze_email_span(email, source)
-            if record is None:
-                agent.update(output={"is_invoice": False, "invoice_count": 0})
-            else:
-                agent.update(
-                    output={
-                        "is_invoice": True,
-                        "invoice_count": 1,
-                        "vendor": record.vendor,
-                        "amount": record.amount.model_dump() if record.amount else None,
-                        "due_date": record.due_date,
-                        "confidence": record.confidence,
-                    }
+                **_trace_attributes(
+                    source,
+                    feature="triage-email",
+                    agent_tags=AGENT_TAGS_TRIAGE_EMAIL,
                 )
+            ):
+                record, output = _analyze_email_core(email, source)
+            agent.update(output=output)
             return record
+    finally:
+        _inside_ledgerline.reset(token)
+
+
+def _trace_attributes(
+    source: Literal["gmail", "demo"],
+    *,
+    feature: str,
+    user_id: str | None = None,
+    agent_tags: list[str] | None = None,
+) -> dict:
+    tags = ["ledgerline", feature, f"mode:{source}"]
+    if agent_tags:
+        tags.extend(agent_tags)
+    attributes: dict = {
+        "tags": tags,
+        "metadata": {"source": source, "feature": feature},
+        "trace_name": feature,
+        "version": __version__,
+    }
+    if user_id:
+        attributes["user_id"] = user_id
+    return attributes
+
+
+def _triage_emails(
+    emails: list[RawEmail],
+    source: Literal["gmail", "demo"],
+) -> list[InvoiceRecord]:
+    invoices: list[InvoiceRecord] = []
+    for email in emails:
+        record = analyze_email(email, source)
+        if record is not None:
+            invoices.append(record)
+    invoices.sort(key=lambda inv: inv.due_date or "9999-12-31")
+    return invoices
+
+
+def _invoice_summaries(invoices: list[InvoiceRecord]) -> list[dict]:
+    return [
+        {
+            "vendor": inv.vendor,
+            "amount": inv.amount.model_dump() if inv.amount else None,
+            "due_date": inv.due_date,
+            "confidence": inv.confidence,
+        }
+        for inv in invoices
+    ]
+
+
+def _triage_agent(
+    emails: list[RawEmail],
+    source: Literal["gmail", "demo"],
+) -> list[InvoiceRecord]:
+    """First agent: decide which emails are payable invoices and extract their fields."""
+    from langfuse import propagate_attributes
+
+    langfuse = get_langfuse()
+    with langfuse.start_as_current_observation(
+        as_type="agent",
+        name="triage-invoices",
+        input={
+            "emails": [
+                {"subject": email.subject, "from": email.from_, "date": email.date}
+                for email in emails
+            ]
+        },
+        metadata={"email_count": len(emails)},
+    ) as agent:
+        # Entered inside the agent so the tag lands on this agent and its children,
+        # but not on the parent scan observation.
+        with propagate_attributes(tags=AGENT_TAGS_TRIAGE):
+            invoices = _triage_emails(emails, source)
+        agent.update(
+            output={
+                "invoice_count": len(invoices),
+                "rejected_count": len(emails) - len(invoices),
+                "invoices": _invoice_summaries(invoices),
+            }
+        )
+        return invoices
+
+
+def run_ledgerline(
+    emails: list[RawEmail],
+    source: Literal["gmail", "demo"],
+    *,
+    user_id: str | None = None,
+) -> LedgerlineResult:
+    """Both agents in sequence: triage extracts invoices, the planner prioritizes them."""
+    require_llm_configured()
+
+    if not is_langfuse_configured():
+        invoices = _triage_emails(emails, source)
+        return LedgerlineResult(invoices=invoices, plan=plan_payments(invoices))
+
+    from langfuse import propagate_attributes
+
+    langfuse = get_langfuse()
+    token = _inside_ledgerline.set(True)
+    try:
+        with langfuse.start_as_current_observation(
+            as_type="agent",
+            name="scan-inbox",
+            input={"mode": source, "email_count": len(emails)},
+            metadata={"source": source, "email_count": len(emails)},
+        ) as root:
+            with propagate_attributes(
+                **_trace_attributes(source, feature="scan-inbox", user_id=user_id)
+            ):
+                invoices = _triage_agent(emails, source)
+                plan = plan_payments(invoices)
+            root.update(
+                output={
+                    "invoice_count": len(invoices),
+                    "invoices": _invoice_summaries(invoices),
+                    "plan_summary": plan.summary,
+                    "pay_now": [
+                        item.vendor for item in plan.items if item.priority == "pay_now"
+                    ],
+                    "totals": [total.model_dump() for total in plan.totals],
+                    "risk_flags": plan.risk_flags,
+                }
+            )
+            return LedgerlineResult(invoices=invoices, plan=plan)
     finally:
         _inside_ledgerline.reset(token)
 
@@ -195,76 +307,5 @@ def run_invoice_agent(
     *,
     user_id: str | None = None,
 ) -> list[InvoiceRecord]:
-    require_llm_configured()
-
-    def _run_scan() -> list[InvoiceRecord]:
-        invoices: list[InvoiceRecord] = []
-        for email in emails:
-            record = analyze_email(email, source)
-            if record is not None:
-                invoices.append(record)
-        invoices.sort(key=lambda inv: inv.due_date or "9999-12-31")
-        return invoices
-
-    if not is_langfuse_configured():
-        return _run_scan()
-
-    from langfuse import propagate_attributes
-
-    langfuse = get_langfuse()
-    tags = ["ledgerline", "invoice-scan", f"mode:{source}"]
-    attr_kwargs: dict = {
-        "tags": tags,
-        "metadata": {
-            "source": source,
-            "email_count": len(emails),
-            "feature": "invoice-scan",
-            "agent": "ledgerline",
-        },
-        "trace_name": "ledgerline",
-    }
-    if user_id:
-        attr_kwargs["user_id"] = user_id
-
-    token = _inside_ledgerline.set(True)
-    try:
-        with langfuse.start_as_current_observation(
-            as_type="agent",
-            name="ledgerline",
-            input={"mode": source, "email_count": len(emails)},
-            metadata={
-                "source": source,
-                "feature": "invoice-scan",
-                "agent": "ledgerline",
-            },
-        ) as root:
-            with propagate_attributes(**attr_kwargs):
-                invoices = _run_scan()
-            root.update(
-                output={
-                    "invoice_count": len(invoices),
-                    "invoices": [
-                        {
-                            "vendor": inv.vendor,
-                            "amount": inv.amount.model_dump() if inv.amount else None,
-                            "due_date": inv.due_date,
-                            "confidence": inv.confidence,
-                        }
-                        for inv in invoices
-                    ],
-                }
-            )
-            return invoices
-    finally:
-        _inside_ledgerline.reset(token)
-
-
-def run_ledgerline(
-    emails: list[RawEmail],
-    source: Literal["gmail", "demo"],
-    *,
-    user_id: str | None = None,
-) -> LedgerlineResult:
-    """Both agents in sequence: triage extracts invoices, the planner prioritizes them."""
-    invoices = run_invoice_agent(emails, source, user_id=user_id)
-    return LedgerlineResult(invoices=invoices, plan=plan_payments(invoices))
+    """Invoices only — kept for scripts and evals that ignore the payment plan."""
+    return run_ledgerline(emails, source, user_id=user_id).invoices

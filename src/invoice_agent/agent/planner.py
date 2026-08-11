@@ -6,6 +6,7 @@ import json
 from datetime import date, datetime, timezone
 
 from invoice_agent.agent.llm import chat_json
+from invoice_agent.observability import get_langfuse, is_langfuse_configured
 from invoice_agent.types import (
     CurrencyTotal,
     InvoiceRecord,
@@ -17,6 +18,10 @@ from invoice_agent.types import (
 
 # Keep the planner prompt bounded on large scans (e.g. the 250-email corpus).
 MAX_PLANNED_INVOICES = 40
+
+# Tags every observation this agent produces, so exports can be grouped by agent. The
+# bare form exists for importers that drop `prefix:value` tags as internal.
+AGENT_TAGS = ["agent:plan-payments", "plan-payments"]
 
 SYSTEM_PROMPT = """You are Ledgerline Planner, an accounts-payable prioritization agent.
 You receive invoices that another agent already extracted from a mailbox, and you decide
@@ -167,8 +172,7 @@ Invoices:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        observation_name="plan-payments",
-        tags=["payment-planning"],
+        observation_name="rank-invoices",
         temperature=0.1,
     )
     llm_plan = LlmPaymentPlan.model_validate(parsed)
@@ -216,20 +220,62 @@ Invoices:
     )
 
 
-def plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
-    """Second agent: rank the triaged invoices into pay now / schedule / hold."""
-    considered = sorted(invoices, key=lambda inv: inv.due_date or "9999-12-31")
-    considered = considered[:MAX_PLANNED_INVOICES]
-
+def _plan_with_fallback(considered: list[InvoiceRecord]) -> PaymentPlan:
     if not considered:
         return PaymentPlan(
             summary="No payable invoices to plan.",
             planned_count=0,
             source="empty",
         )
-
     try:
         return _plan_core(considered)
     except Exception as exc:
         # A broken plan must not fail a scan that already produced invoices.
         return _fallback_plan(considered, str(exc))
+
+
+def plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
+    """Second agent: rank the triaged invoices into pay now / schedule / hold."""
+    ranked = sorted(invoices, key=lambda inv: inv.due_date or "9999-12-31")
+    truncated = len(ranked) > MAX_PLANNED_INVOICES
+    considered = ranked[:MAX_PLANNED_INVOICES]
+
+    if not is_langfuse_configured():
+        return _plan_with_fallback(considered)
+
+    from langfuse import propagate_attributes
+
+    today = _today()
+    langfuse = get_langfuse()
+    with langfuse.start_as_current_observation(
+        as_type="agent",
+        name="plan-payments",
+        input={
+            "today": today.isoformat(),
+            "invoices": _planner_input(considered, today),
+        },
+        metadata={
+            "invoice_count": len(considered),
+            "truncated": truncated,
+            "max_planned_invoices": MAX_PLANNED_INVOICES,
+        },
+    ) as agent:
+        # Entered inside the agent so the tag lands on this agent and its children,
+        # but not on the parent scan observation.
+        with propagate_attributes(tags=AGENT_TAGS):
+            plan = _plan_with_fallback(considered)
+        agent.update(
+            output={
+                "summary": plan.summary,
+                "pay_now": [
+                    item.vendor for item in plan.items if item.priority == "pay_now"
+                ],
+                "items": [item.model_dump(by_alias=True) for item in plan.items],
+                "totals": [total.model_dump() for total in plan.totals],
+                "risk_flags": plan.risk_flags,
+            },
+            metadata={"plan_source": plan.source},
+        )
+        if plan.source == "fallback":
+            agent.update(level="WARNING", status_message=plan.summary)
+        return plan

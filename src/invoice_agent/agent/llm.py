@@ -144,7 +144,6 @@ def chat_json(
     system_prompt: str,
     user_prompt: str,
     observation_name: str,
-    tags: list[str],
     temperature: float = 0,
 ) -> dict:
     """Run one JSON-mode chat completion and return the parsed object."""
@@ -161,11 +160,9 @@ def chat_json(
         "response_format": {"type": "json_object"},
     }
     if is_langfuse_configured():
+        # Tags come from the enclosing agent via propagate_attributes.
         create_kwargs["name"] = observation_name
-        create_kwargs["metadata"] = {
-            "provider": endpoint.provider,
-            "langfuse_tags": tags,
-        }
+        create_kwargs["metadata"] = {"provider": endpoint.provider}
 
     try:
         response = client.chat.completions.create(**create_kwargs)
@@ -221,7 +218,6 @@ Body / attachments text:
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         observation_name="classify-invoice",
-        tags=["invoice-triage"],
     )
 
     # Some models return confidence as 0–100; normalize to 0–1 for the schema.
