@@ -109,23 +109,7 @@ scan-inbox            (agent)  input: mode + email count, output: invoices + pla
 Running a single email through `analyze_email` (the eval scripts) produces a
 `triage-email` trace instead, since one email is the whole unit of work there.
 
-Every observation carries tags naming the agent that produced it, so exported
-observations can be attributed to an agent without walking the tree. Each agent tags
-in both a prefixed and a bare form, because some trace importers discard
-`prefix:value` tags as internal:
-
-| Tags | Applied to |
-|------|------------|
-| `agent:triage-invoices`, `triage-invoices` | the triage agent, its `analyze-email` spans, and their generations |
-| `agent:plan-payments`, `plan-payments` | the planner agent and its generation |
-| `agent:triage-email`, `triage-email` | the single-email path used by the eval scripts |
-
-The root `scan-inbox` observation deliberately carries no agent tag — it is the
-orchestrator, so filtering on one agent's tag never pulls in the whole scan. Note that
-Langfuse aggregates all observation tags onto the trace, so a scan trace lists every
-agent tag; the mapping is only exact at the observation level.
-
-Traces also carry the Gmail address as `user_id`, the package version, and
+Traces carry the Gmail address as `user_id`, the package version, and
 `mode:gmail` / `mode:demo` tags. Email addresses and card-like numbers are masked
 before anything leaves the process (`src/invoice_agent/observability.py`). When the
 planner falls back to due-date rules, its observation is marked `WARNING` with the

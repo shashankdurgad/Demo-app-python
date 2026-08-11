@@ -19,10 +19,6 @@ from invoice_agent.types import (
 # Keep the planner prompt bounded on large scans (e.g. the 250-email corpus).
 MAX_PLANNED_INVOICES = 40
 
-# Tags every observation this agent produces, so exports can be grouped by agent. The
-# bare form exists for importers that drop `prefix:value` tags as internal.
-AGENT_TAGS = ["agent:plan-payments", "plan-payments"]
-
 SYSTEM_PROMPT = """You are Ledgerline Planner, an accounts-payable prioritization agent.
 You receive invoices that another agent already extracted from a mailbox, and you decide
 in which order a small finance team should pay them.
@@ -173,6 +169,7 @@ Invoices:
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         observation_name="rank-invoices",
+        tags=["payment-planning"],
         temperature=0.1,
     )
     llm_plan = LlmPaymentPlan.model_validate(parsed)
@@ -243,27 +240,19 @@ def plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
     if not is_langfuse_configured():
         return _plan_with_fallback(considered)
 
-    from langfuse import propagate_attributes
-
     today = _today()
     langfuse = get_langfuse()
     with langfuse.start_as_current_observation(
         as_type="agent",
         name="plan-payments",
-        input={
-            "today": today.isoformat(),
-            "invoices": _planner_input(considered, today),
-        },
+        input={"today": today.isoformat(), "invoices": _planner_input(considered, today)},
         metadata={
             "invoice_count": len(considered),
             "truncated": truncated,
             "max_planned_invoices": MAX_PLANNED_INVOICES,
         },
     ) as agent:
-        # Entered inside the agent so the tag lands on this agent and its children,
-        # but not on the parent scan observation.
-        with propagate_attributes(tags=AGENT_TAGS):
-            plan = _plan_with_fallback(considered)
+        plan = _plan_with_fallback(considered)
         agent.update(
             output={
                 "summary": plan.summary,

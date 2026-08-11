@@ -17,14 +17,8 @@ from invoice_agent.types import (
     RawEmail,
 )
 
-# True while nested under a root agent observation (batch or single-email).
+# True while nested under a ledgerline agent observation (batch or single-email).
 _inside_ledgerline: ContextVar[bool] = ContextVar("inside_ledgerline", default=False)
-
-# Tags identifying the agent that produced an observation, kept in sync with the agent
-# observation names. Each agent gets both a prefixed tag (for filtering in Langfuse) and
-# a bare one, since importers that treat `prefix:value` as internal drop the former.
-AGENT_TAGS_TRIAGE = ["agent:triage-invoices", "triage-invoices"]
-AGENT_TAGS_TRIAGE_EMAIL = ["agent:triage-email", "triage-email"]
 
 
 def _to_gmail_url(email_id: str, source: Literal["gmail", "demo"]) -> str:
@@ -162,13 +156,7 @@ def analyze_email(
             },
             metadata={"source": source, "email_id": email.id},
         ) as agent:
-            with propagate_attributes(
-                **_trace_attributes(
-                    source,
-                    feature="triage-email",
-                    agent_tags=AGENT_TAGS_TRIAGE_EMAIL,
-                )
-            ):
+            with propagate_attributes(**_trace_attributes(source, feature="triage-email")):
                 record, output = _analyze_email_core(email, source)
             agent.update(output=output)
             return record
@@ -181,13 +169,9 @@ def _trace_attributes(
     *,
     feature: str,
     user_id: str | None = None,
-    agent_tags: list[str] | None = None,
 ) -> dict:
-    tags = ["ledgerline", feature, f"mode:{source}"]
-    if agent_tags:
-        tags.extend(agent_tags)
     attributes: dict = {
-        "tags": tags,
+        "tags": ["ledgerline", feature, f"mode:{source}"],
         "metadata": {"source": source, "feature": feature},
         "trace_name": feature,
         "version": __version__,
@@ -227,8 +211,6 @@ def _triage_agent(
     source: Literal["gmail", "demo"],
 ) -> list[InvoiceRecord]:
     """First agent: decide which emails are payable invoices and extract their fields."""
-    from langfuse import propagate_attributes
-
     langfuse = get_langfuse()
     with langfuse.start_as_current_observation(
         as_type="agent",
@@ -241,10 +223,7 @@ def _triage_agent(
         },
         metadata={"email_count": len(emails)},
     ) as agent:
-        # Entered inside the agent so the tag lands on this agent and its children,
-        # but not on the parent scan observation.
-        with propagate_attributes(tags=AGENT_TAGS_TRIAGE):
-            invoices = _triage_emails(emails, source)
+        invoices = _triage_emails(emails, source)
         agent.update(
             output={
                 "invoice_count": len(invoices),
