@@ -10,7 +10,6 @@ from typing import Any, Literal
 
 from openai import OpenAI
 
-from invoice_agent.observability import is_langfuse_configured
 from invoice_agent.types import LlmExtraction
 
 SYSTEM_PROMPT = """You are Ledgerline, an accounting invoice triage agent.
@@ -109,18 +108,6 @@ def get_llm_status() -> dict[str, Any]:
 
 
 def _get_openai_client(endpoint: LlmEndpoint) -> OpenAI:
-    """Build an OpenAI client; use Langfuse drop-in when tracing is configured."""
-    if is_langfuse_configured():
-        from invoice_agent.observability import init_langfuse
-        from langfuse.openai import OpenAI as LangfuseOpenAI
-
-        init_langfuse()
-        return LangfuseOpenAI(
-            api_key=endpoint.api_key,
-            base_url=endpoint.base_url,
-            timeout=120.0,
-        )
-
     return OpenAI(
         api_key=endpoint.api_key,
         base_url=endpoint.base_url,
@@ -143,8 +130,6 @@ def chat_json(
     *,
     system_prompt: str,
     user_prompt: str,
-    observation_name: str,
-    tags: list[str],
     temperature: float = 0,
 ) -> dict:
     """Run one JSON-mode chat completion and return the parsed object."""
@@ -160,12 +145,6 @@ def chat_json(
         ],
         "response_format": {"type": "json_object"},
     }
-    if is_langfuse_configured():
-        create_kwargs["name"] = observation_name
-        create_kwargs["metadata"] = {
-            "provider": endpoint.provider,
-            "langfuse_tags": tags,
-        }
 
     try:
         response = client.chat.completions.create(**create_kwargs)
@@ -220,8 +199,6 @@ Body / attachments text:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        observation_name="classify-invoice",
-        tags=["invoice-triage"],
     )
 
     # Some models return confidence as 0–100; normalize to 0–1 for the schema.

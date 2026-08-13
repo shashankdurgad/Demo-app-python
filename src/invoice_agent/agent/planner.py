@@ -167,8 +167,6 @@ Invoices:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        observation_name="plan-payments",
-        tags=["payment-planning"],
         temperature=0.1,
     )
     llm_plan = LlmPaymentPlan.model_validate(parsed)

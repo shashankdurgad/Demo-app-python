@@ -32,10 +32,6 @@ def load_env_local() -> None:
         if os.environ.get(key) is None:
             os.environ[key] = value
 
-    # Align CLI host env with SDK base URL naming.
-    if os.environ.get("LANGFUSE_BASE_URL") and not os.environ.get("LANGFUSE_HOST"):
-        os.environ["LANGFUSE_HOST"] = os.environ["LANGFUSE_BASE_URL"]
-
 
 def require_llm_env() -> None:
     if not os.environ.get("OPENAI_API_KEY") and not os.environ.get("OLLAMA_BASE_URL"):

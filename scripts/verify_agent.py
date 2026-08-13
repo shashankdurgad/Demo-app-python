@@ -13,9 +13,6 @@ from unittest.mock import MagicMock, patch
 def main() -> None:
     os.environ["OPENAI_API_KEY"] = "test-key"
     os.environ["OPENAI_MODEL"] = "gpt-4o-mini"
-    # Keep unit check offline — do not send traces.
-    os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
-    os.environ.pop("LANGFUSE_SECRET_KEY", None)
 
     responses = {
         "demo-1": {
