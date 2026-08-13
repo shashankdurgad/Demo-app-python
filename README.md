@@ -109,6 +109,11 @@ scan-inbox            (agent)  input: mode + email count, output: invoices + pla
 Running a single email through `analyze_email` (the eval scripts) produces a
 `triage-email` trace instead, since one email is the whole unit of work there.
 
+These observation names are stable, so per-agent slicing needs no custom tagging:
+filter observations by `name=triage-invoices` or `name=plan-payments` for agent-level
+latency and error rates, or by `name=classify-invoice` / `name=rank-invoices` for the
+cost and token usage of each agent's model calls.
+
 Traces carry the Gmail address as `user_id`, the package version, and
 `mode:gmail` / `mode:demo` tags. Email addresses and card-like numbers are masked
 before anything leaves the process (`src/invoice_agent/observability.py`). When the

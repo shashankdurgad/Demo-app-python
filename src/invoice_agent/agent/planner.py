@@ -169,7 +169,6 @@ Invoices:
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         observation_name="rank-invoices",
-        tags=["payment-planning"],
         temperature=0.1,
     )
     llm_plan = LlmPaymentPlan.model_validate(parsed)
