@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
+from braintrust import traced
+
 from invoice_agent.agent.llm import analyze_email_with_llm, require_llm_configured
 from invoice_agent.agent.planner import plan_payments
 from invoice_agent.types import (
@@ -37,6 +39,7 @@ def _received_at(date_str: str) -> str:
             return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+@traced
 def analyze_email(
     email: RawEmail,
     source: Literal["gmail", "demo"],
@@ -88,6 +91,7 @@ def analyze_email(
     )
 
 
+@traced
 def run_invoice_agent(
     emails: list[RawEmail],
     source: Literal["gmail", "demo"],
@@ -103,6 +107,7 @@ def run_invoice_agent(
     return invoices
 
 
+@traced
 def run_ledgerline(
     emails: list[RawEmail],
     source: Literal["gmail", "demo"],

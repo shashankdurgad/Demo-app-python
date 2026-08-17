@@ -14,3 +14,6 @@ venv/
 .ruff_cache/
 *.egg
 .DS_Store
+# Added by Braintrust Wizard
+.env.braintrust
+.braintrust.json

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timezone
 
+from braintrust import traced
+
 from invoice_agent.agent.llm import chat_json
 from invoice_agent.types import (
     CurrencyTotal,
@@ -167,6 +169,7 @@ Invoices:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        span_name="rank-invoices",
         temperature=0.1,
     )
     llm_plan = LlmPaymentPlan.model_validate(parsed)
@@ -214,6 +217,7 @@ Invoices:
     )
 
 
+@traced
 def plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
     """Second agent: rank the triaged invoices into pay now / schedule / hold."""
     considered = sorted(invoices, key=lambda inv: inv.due_date or "9999-12-31")

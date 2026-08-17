@@ -130,6 +130,7 @@ def chat_json(
     *,
     system_prompt: str,
     user_prompt: str,
+    span_name: str,
     temperature: float = 0,
 ) -> dict:
     """Run one JSON-mode chat completion and return the parsed object."""
@@ -144,6 +145,8 @@ def chat_json(
             {"role": "user", "content": user_prompt},
         ],
         "response_format": {"type": "json_object"},
+        # Braintrust consumes span_info to name the span; it never reaches OpenAI.
+        "span_info": {"name": span_name},
     }
 
     try:
@@ -199,6 +202,7 @@ Body / attachments text:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        span_name="classify-invoice",
     )
 
     # Some models return confidence as 0–100; normalize to 0–1 for the schema.
