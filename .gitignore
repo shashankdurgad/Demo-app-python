@@ -9,6 +9,10 @@ build/
 venv/
 .env
 .env.local
+.env.*.bak
+.env.braintrust
+.braintrust.json
+.cursor/mcp.json
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

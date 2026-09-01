@@ -130,3 +130,69 @@ class LlmPaymentPlan(BaseModel):
     items: list[LlmPlanItem] = Field(default_factory=list)
     summary: str | None = None
     risk_flags: list[str] = Field(default_factory=list, alias="riskFlags")
+
+
+AdjudicationDecision = Literal["approve", "partial", "reject", "escalate"]
+
+
+class ExpenseLineItem(BaseModel):
+    description: str
+    amount: float
+    currency: str
+
+
+class ExpenseClaim(BaseModel):
+    """Input to Ledgerline Adjudicator."""
+
+    claim_id: str
+    submitter_id: str
+    submitter_name: str
+    category: str
+    region: str
+    merchant: str
+    claim_date: str | None = None
+    submitted_at: str
+    units: int | None = None
+    claimed_amount: float
+    claim_currency: str
+    reporting_currency: str
+    receipt_text: str | None = None
+    notes: str = ""
+    line_items: list[ExpenseLineItem] = Field(default_factory=list)
+
+
+class Adjudication(BaseModel):
+    """Structured decision from Ledgerline Adjudicator."""
+
+    reimbursable: bool = Field(
+        description="boolean — true only when the claim is payable in full or in part under the cited policy"
+    )
+    decision: AdjudicationDecision = Field(
+        description="string — one of approve, partial, reject, escalate"
+    )
+    policy_clause: str | None = Field(
+        description="string|null — identifier of the single policy clause applied, e.g. TRV-04"
+    )
+    approved_amount: float | None = Field(
+        description="number|null — amount approved in the reporting currency, no symbols"
+    )
+    reporting_currency: str | None = Field(
+        description="string|null — ISO currency code (USD, GBP, EUR)"
+    )
+    fx_rate_used: float | None = Field(
+        description="number|null — rate applied to convert the claim currency, 1.0 when no conversion"
+    )
+    effective_date: str | None = Field(
+        description="string|null — policy effective date as YYYY-MM-DD"
+    )
+    receipt_required: bool = Field(
+        description="boolean — whether policy requires a receipt for this claim"
+    )
+    rationale: str = Field(
+        description="string — brief explanation of the decision grounded in the claim and the cited clause"
+    )
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        description="float in [0,1] — model confidence in the decision",
+    )

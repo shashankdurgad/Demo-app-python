@@ -23,8 +23,22 @@ Add at least one LLM config to `.env.local`:
 
 ```bash
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5.2
 ```
+
+Optional LangSmith tracing (nested agent + LLM spans in [LangSmith](https://smith.langchain.com/)):
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGSMITH_PROJECT=ledgerline
+# Required for EU workspaces (https://eu.smith.langchain.com):
+LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
+```
+
+If `LANGSMITH_API_KEY` is set and `LANGSMITH_TRACING` is omitted, tracing is enabled and traces go to project `ledgerline`. Set `LANGSMITH_TRACING=false` to disable.
+
+A `403 Forbidden` on `api.smith.langchain.com` usually means an EU key was sent to the US endpoint — set `LANGSMITH_ENDPOINT` as above.
 
 Or for a fully local model:
 
@@ -83,6 +97,45 @@ Two agents run in sequence on every scan.
 The planner never fails a scan: if its call or JSON is unusable, it falls back to
 deterministic due-date rules and marks the plan `source` as `fallback`.
 
+## Ledgerline Adjudicator
+
+A third agent decides whether a submitted **expense claim** is reimbursable. Unlike
+triage, it is multi-step: the model must call tools to retrieve the policy clause,
+an FX rate, and submitter history, then `post_decision` before returning JSON
+(`approve` / `partial` / `reject` / `escalate`).
+
+Tools are backed by a deterministic in-repo fixture store (`adjudicator_fixtures.py`).
+The same arguments always return the same output so eval replay is stable.
+
+Trace-producing runs pin **gpt-5.6** via `ADJUDICATOR_MODEL` (default `gpt-5.6`).
+This is independent of `OPENAI_MODEL`, which remains the triage/planner default
+(`gpt-5.2`). Overmind tracing needs `OVERMIND_API_KEY` (and `OVERMIND_API_URL` if
+you are not using the hosted endpoint).
+
+```bash
+python -m scripts.run_adjudicator_100 --check-tools   # fixture determinism, no LLM
+python -m scripts.run_adjudicator_100 --limit 5
+python -m scripts.run_adjudicator_100                 # 100 claims + sidecar JSONL
+# or: make run-adjudicator-100
+```
+
+The sidecar is written to `artifacts/adjudicator-100.jsonl` (claim input +
+constructed ground truth + model output). One Overmind root trace is emitted per
+claim.
+
+A disjoint eval corpus (`CLM-E-*`, session `adjudicator-eval-100-YYYYMMDD`) is
+run separately so train and eval never share claim ids or traces:
+
+```bash
+python -m scripts.run_adjudicator_eval_100 --limit 5
+python -m scripts.run_adjudicator_eval_100
+# or: make run-adjudicator-eval-100
+```
+
+The eval sidecar is `artifacts/adjudicator-eval-100.jsonl`.
+
+HTTP: `POST /api/adjudicate` with an `ExpenseClaim` JSON body.
+
 ## Scripts
 
 ```bash
@@ -92,9 +145,11 @@ run-20-emails     # handcrafted demo corpus through analyze_email
 run-100-emails    # generated corpus (DEMO_EMAIL_COUNT or 100)
 run-250-emails    # generated corpus (DEMO_EMAIL_COUNT or 250)
 run-themes        # themes stress harness (prefers Ollama when set)
-run-eval-50       # gold eval A (50 scenarios)
-run-eval-50b      # gold eval B (50 scenarios)
-dev               # uvicorn with reload on :8000
+run-eval-50        # gold eval A (50 scenarios)
+run-eval-50b       # gold eval B (50 scenarios)
+run-adjudicator-100       # expense adjudicator train 100 (ADJUDICATOR_MODEL)
+run-adjudicator-eval-100  # disjoint eval 100 (same mix, new claim ids)
+dev                # uvicorn with reload on :8000
 ```
 
 Or via module:
@@ -102,6 +157,8 @@ Or via module:
 ```bash
 python -m scripts.verify_agent
 python -m scripts.run_both_agents --limit 6
+python -m scripts.run_adjudicator_100 --limit 5
+python -m scripts.run_adjudicator_eval_100 --limit 5
 ```
 
 ## API
@@ -113,3 +170,4 @@ python -m scripts.run_both_agents --limit 6
 | POST | `/api/auth/logout` | Clear session |
 | GET | `/api/auth/status` | Auth + LLM status JSON |
 | POST | `/api/scan` | `{mode?: "gmail"\|"demo"}` → scan result |
+| POST | `/api/adjudicate` | Expense claim JSON → adjudication |

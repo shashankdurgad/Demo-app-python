@@ -32,6 +32,10 @@ def load_env_local() -> None:
         if os.environ.get(key) is None:
             os.environ[key] = value
 
+    from invoice_agent.agent.tracing import configure_tracing
+
+    configure_tracing()
+
 
 def require_llm_env() -> None:
     if not os.environ.get("OPENAI_API_KEY") and not os.environ.get("OLLAMA_BASE_URL"):

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 def main() -> None:
     os.environ["OPENAI_API_KEY"] = "test-key"
-    os.environ["OPENAI_MODEL"] = "gpt-4o-mini"
+    os.environ["OPENAI_MODEL"] = "gpt-5.2"
 
     responses = {
         "demo-1": {

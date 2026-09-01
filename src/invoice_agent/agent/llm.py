@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+import overmind
+from langsmith import traceable
 from openai import OpenAI
 
+from invoice_agent.agent.overmind_tracing import configure_overmind
+from invoice_agent.agent.tracing import configure_tracing, tracing_enabled
 from invoice_agent.types import LlmExtraction
 
 SYSTEM_PROMPT = """You are Ledgerline, an accounting invoice triage agent.
@@ -80,7 +84,7 @@ def get_llm_endpoint() -> LlmEndpoint:
         return LlmEndpoint(
             provider="openai",
             base_url=_openai_compatible_base_url(raw),
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            model=os.environ.get("OPENAI_MODEL", "gpt-5.2"),
             api_key=os.environ["OPENAI_API_KEY"],
         )
 
@@ -107,12 +111,62 @@ def get_llm_status() -> dict[str, Any]:
     }
 
 
+def get_adjudicator_model() -> str:
+    return os.environ.get("ADJUDICATOR_MODEL", "gpt-5.6")
+
+
+def get_adjudicator_endpoint() -> LlmEndpoint:
+    """Same client construction as triage, with the adjudicator's own model pin."""
+    base = get_llm_endpoint()
+    return replace(base, model=get_adjudicator_model())
+
+
+def get_adjudicator_llm_status() -> dict[str, Any]:
+    if not is_llm_configured():
+        return {"configured": False, "provider": None, "model": None}
+    endpoint = get_adjudicator_endpoint()
+    return {
+        "configured": True,
+        "provider": endpoint.provider,
+        "model": endpoint.model,
+    }
+
+
+@dataclass(frozen=True)
+class ChatToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatCompletionMessage:
+    content: str | None
+    tool_calls: list[ChatToolCall]
+
+
 def _get_openai_client(endpoint: LlmEndpoint) -> OpenAI:
-    return OpenAI(
+    configure_tracing()
+    # Must run before the client is constructed so the OpenAI SDK is patched.
+    configure_overmind()
+    client = OpenAI(
         api_key=endpoint.api_key,
         base_url=endpoint.base_url,
         timeout=120.0,
     )
+    if tracing_enabled():
+        from langsmith.wrappers import wrap_openai
+
+        return wrap_openai(
+            client,
+            tracing_extra={
+                "metadata": {
+                    "provider": endpoint.provider,
+                    "model": endpoint.model,
+                }
+            },
+        )
+    return client
 
 
 def _extract_json_object(content: str) -> Any:
@@ -126,6 +180,16 @@ def _extract_json_object(content: str) -> Any:
     return json.loads(match.group(0))
 
 
+def _supports_temperature(model: str) -> bool:
+    """GPT-5 reasoning models reject custom temperature; chat variants allow it."""
+    name = model.split("/")[-1].lower()
+    if name.startswith("gpt-5") and "chat" not in name:
+        return False
+    return True
+
+
+@overmind.function(name="chat_json")
+@traceable(name="chat_json", tags=["llm"])
 def chat_json(
     *,
     system_prompt: str,
@@ -138,13 +202,14 @@ def chat_json(
 
     create_kwargs: dict[str, Any] = {
         "model": endpoint.model,
-        "temperature": temperature,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "response_format": {"type": "json_object"},
     }
+    if _supports_temperature(endpoint.model):
+        create_kwargs["temperature"] = temperature
 
     try:
         response = client.chat.completions.create(**create_kwargs)
@@ -164,6 +229,64 @@ def chat_json(
     return parsed
 
 
+@overmind.function(name="create_chat_completion")
+@traceable(name="create_chat_completion", tags=["llm"])
+def create_chat_completion(
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    temperature: float = 0,
+    tool_choice: str | dict[str, Any] | None = None,
+) -> ChatCompletionMessage:
+    """One chat.completions round, optionally with OpenAI tools."""
+    endpoint = (
+        get_adjudicator_endpoint()
+        if model is None
+        else replace(get_llm_endpoint(), model=model)
+    )
+    client = _get_openai_client(endpoint)
+
+    create_kwargs: dict[str, Any] = {
+        "model": endpoint.model,
+        "messages": messages,
+    }
+    if tools:
+        create_kwargs["tools"] = tools
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+        # gpt-5.x reasoning models reject tools on chat.completions unless
+        # reasoning_effort is none (otherwise they require the Responses API).
+        if not _supports_temperature(endpoint.model):
+            create_kwargs["reasoning_effort"] = "none"
+    if _supports_temperature(endpoint.model):
+        create_kwargs["temperature"] = temperature
+
+    try:
+        response = client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        raise RuntimeError(f"LLM request failed: {exc}") from exc
+
+    if not response.choices:
+        raise RuntimeError("LLM returned no choices.")
+    message = response.choices[0].message
+    tool_calls: list[ChatToolCall] = []
+    for item in getattr(message, "tool_calls", None) or []:
+        function = getattr(item, "function", None)
+        if function is None:
+            continue
+        tool_calls.append(
+            ChatToolCall(
+                id=str(item.id),
+                name=str(function.name),
+                arguments=str(function.arguments or "{}"),
+            )
+        )
+    return ChatCompletionMessage(content=message.content, tool_calls=tool_calls)
+
+
+@overmind.function(name="analyze_email_with_llm")
+@traceable(name="analyze_email_with_llm", tags=["triage"])
 def analyze_email_with_llm(
     *,
     subject: str,

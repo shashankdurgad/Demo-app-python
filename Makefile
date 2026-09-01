@@ -1,4 +1,4 @@
-.PHONY: verify-agent run-both-agents run-20-emails run-100-emails run-250-emails run-themes run-eval-50 run-eval-50b dev install
+.PHONY: verify-agent run-both-agents run-20-emails run-100-emails run-250-emails run-themes run-eval-50 run-eval-50b run-adjudicator-100 run-adjudicator-eval-100 dev install
 
 install:
 	pip install -e .
@@ -26,6 +26,12 @@ run-eval-50:
 
 run-eval-50b:
 	python -m scripts.run_eval_50b
+
+run-adjudicator-100:
+	python -m scripts.run_adjudicator_100
+
+run-adjudicator-eval-100:
+	python -m scripts.run_adjudicator_eval_100
 
 dev:
 	uvicorn invoice_agent.app:app --reload --host 127.0.0.1 --port 8000
