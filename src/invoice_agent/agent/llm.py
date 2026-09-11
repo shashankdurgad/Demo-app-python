@@ -8,14 +8,12 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-import overmind
 from langsmith import traceable
 from openai import OpenAI
 
 from invoice_agent.agent.braintrust_tracing import braintrust_enabled, configure_braintrust
 from invoice_agent.agent.galileo_tracing import configure_galileo
 from invoice_agent.agent.langfuse_tracing import configure_langfuse, langfuse_enabled
-from invoice_agent.agent.overmind_tracing import configure_overmind
 from invoice_agent.agent.tracing import configure_tracing, tracing_enabled
 from invoice_agent.types import LlmExtraction
 
@@ -151,7 +149,6 @@ class ChatCompletionMessage:
 def _get_openai_client(endpoint: LlmEndpoint) -> OpenAI:
     configure_tracing()
     # Must run before the client is constructed so the OpenAI SDK is patched.
-    configure_overmind()
     configure_galileo()
     configure_langfuse()
     configure_braintrust()
@@ -194,7 +191,6 @@ def _supports_temperature(model: str) -> bool:
     return True
 
 
-@overmind.function(name="chat_json")
 @traceable(name="chat_json", tags=["llm"])
 def chat_json(
     *,
@@ -242,7 +238,6 @@ def chat_json(
     return parsed
 
 
-@overmind.function(name="create_chat_completion")
 @traceable(name="create_chat_completion", tags=["llm"])
 def create_chat_completion(
     *,
@@ -303,7 +298,6 @@ def create_chat_completion(
     return ChatCompletionMessage(content=message.content, tool_calls=tool_calls)
 
 
-@overmind.function(name="analyze_email_with_llm")
 @traceable(name="analyze_email_with_llm", tags=["triage"])
 def analyze_email_with_llm(
     *,

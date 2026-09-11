@@ -1,12 +1,10 @@
 """Model-callable tools for Ledgerline Adjudicator.
 
-Each method is backed by the in-repo fixture store and decorated so Overmind
-records a tool_call child span. Outputs are deterministic.
+Each method is backed by the in-repo fixture store. Outputs are deterministic.
 """
 
 from __future__ import annotations
 
-import overmind
 from braintrust import traced
 from galileo import log
 from langfuse import observe
@@ -144,7 +142,6 @@ class AdjudicatorTools:
     @traced(name="lookup_policy")
     @observe(name="lookup_policy", as_type="tool")
     @log(span_type="tool", name="lookup_policy")
-    @overmind.tool(name="lookup_policy")
     @traceable(name="lookup_policy", tags=["adjudicator", "tool"])
     def lookup_policy(self, category: str, region: str, claim_date: str) -> dict:
         return lookup_policy_fixture(category, region, claim_date)
@@ -152,7 +149,6 @@ class AdjudicatorTools:
     @traced(name="get_fx_rate")
     @observe(name="get_fx_rate", as_type="tool")
     @log(span_type="tool", name="get_fx_rate")
-    @overmind.tool(name="get_fx_rate")
     @traceable(name="get_fx_rate", tags=["adjudicator", "tool"])
     def get_fx_rate(self, from_currency: str, to_currency: str, date: str) -> dict:
         return get_fx_rate_fixture(from_currency, to_currency, date)
@@ -160,7 +156,6 @@ class AdjudicatorTools:
     @traced(name="get_submitter_history")
     @observe(name="get_submitter_history", as_type="tool")
     @log(span_type="tool", name="get_submitter_history")
-    @overmind.tool(name="get_submitter_history")
     @traceable(name="get_submitter_history", tags=["adjudicator", "tool"])
     def get_submitter_history(self, submitter_id: str) -> dict:
         return get_submitter_history_fixture(submitter_id)
@@ -168,7 +163,6 @@ class AdjudicatorTools:
     @traced(name="post_decision")
     @observe(name="post_decision", as_type="tool")
     @log(span_type="tool", name="post_decision")
-    @overmind.tool(name="post_decision")
     @traceable(name="post_decision", tags=["adjudicator", "tool"])
     def post_decision(
         self,

@@ -35,7 +35,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--session",
         default=None,
-        help="Overmind conversation id (defaults to a timestamped id).",
+        help="Session id for tracing backends (defaults to a timestamped id).",
     )
     parser.add_argument(
         "--check-tools",
@@ -88,9 +88,6 @@ def main() -> None:
         return
 
     require_llm_env()
-    if not os.environ.get("OVERMIND_API_KEY"):
-        print("Hard failure: OVERMIND_API_KEY is not set", file=sys.stderr)
-        sys.exit(1)
 
     from invoice_agent.agent.adjudicator import adjudicate_claim
     from invoice_agent.agent.galileo_tracing import (
@@ -101,10 +98,8 @@ def main() -> None:
     from invoice_agent.agent.braintrust_tracing import configure_braintrust, flush_braintrust
     from invoice_agent.agent.langfuse_tracing import configure_langfuse, flush_langfuse
     from invoice_agent.agent.llm import get_adjudicator_llm_status
-    from invoice_agent.agent.overmind_tracing import configure_overmind
     from invoice_agent.agent.tracing import flush_langsmith
     from invoice_agent.adjudicator_claims import ADJUDICATOR_CASES
-    import overmind
 
     status = get_adjudicator_llm_status()
     model = status.get("model")
@@ -124,11 +119,9 @@ def main() -> None:
         f"adjudicator-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     )
 
-    configure_overmind()
     configure_galileo()
     configure_langfuse()
     configure_braintrust()
-    overmind.set_conversation_id(session_id)
     start_galileo_session(session_id)
 
     sidecar_path: Path = args.sidecar
@@ -184,7 +177,6 @@ def main() -> None:
                 f"conf={result.confidence}"
             )
 
-    overmind.force_flush_traces()
     flush_galileo()
     flush_langfuse()
     flush_langsmith()

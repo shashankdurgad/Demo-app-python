@@ -1,7 +1,6 @@
 """Galileo tracing setup for the Ledgerline agents.
 
-Sits alongside LangSmith (`tracing.py`) and Overmind (`overmind_tracing.py`).
-All three backends can be enabled at the same time.
+Sits alongside LangSmith (`tracing.py`). Both backends can be enabled at the same time.
 
 Requires ``GALILEO_API_KEY``. Project and log stream default to ``demo app``
 (matching the Galileo getting-started names) and can be overridden with

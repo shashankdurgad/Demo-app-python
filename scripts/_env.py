@@ -35,11 +35,9 @@ def load_env_local() -> None:
     from invoice_agent.agent.braintrust_tracing import configure_braintrust
     from invoice_agent.agent.galileo_tracing import configure_galileo
     from invoice_agent.agent.langfuse_tracing import configure_langfuse
-    from invoice_agent.agent.overmind_tracing import configure_overmind
     from invoice_agent.agent.tracing import configure_tracing
 
     configure_tracing()
-    configure_overmind()
     configure_galileo()
     configure_langfuse()
     configure_braintrust()

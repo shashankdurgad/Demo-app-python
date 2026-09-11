@@ -21,13 +21,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-import overmind
-
 from invoice_agent.agent.braintrust_tracing import configure_braintrust, flush_braintrust
 from invoice_agent.agent.galileo_tracing import configure_galileo, flush_galileo, start_galileo_session
 from invoice_agent.agent.langfuse_tracing import configure_langfuse, flush_langfuse
 from invoice_agent.agent.llm import get_llm_status, is_llm_configured
-from invoice_agent.agent.overmind_tracing import configure_overmind
 from invoice_agent.agent.tracing import configure_tracing, flush_langsmith
 from invoice_agent.agent.triage import run_ledgerline
 from invoice_agent.agent.adjudicator import adjudicate_claim
@@ -43,7 +40,6 @@ from invoice_agent.session import clear_session, read_session, write_session
 from invoice_agent.types import AuthStatus, ExpenseClaim, ScanResult
 
 configure_tracing()
-configure_overmind()
 configure_galileo()
 configure_langfuse()
 configure_braintrust()
@@ -240,7 +236,6 @@ async def adjudicate(claim: ExpenseClaim) -> JSONResponse:
         from uuid import uuid4
 
         session_id = f"adjudicate-{uuid4()}"
-        overmind.set_conversation_id(session_id)
         start_galileo_session(session_id)
         result = adjudicate_claim(claim)
         flush_galileo()
@@ -255,7 +250,6 @@ async def adjudicate(claim: ExpenseClaim) -> JSONResponse:
 
 @app.on_event("shutdown")
 async def _flush_traces() -> None:
-    overmind.force_flush_traces()
     flush_galileo()
     flush_langfuse()
     flush_langsmith()

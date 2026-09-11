@@ -20,14 +20,6 @@ def main() -> None:
     os.environ.pop("BRAINTRUST_API_KEY", None)
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ.pop("LANGSMITH_API_KEY", None)
-    os.environ.pop("OVERMIND_API_KEY", None)
-    os.environ["OVERMIND_TRACE_FILE"] = os.path.join(
-        os.environ.get("TMPDIR", "/tmp"), "overmind-verify.jsonl"
-    )
-
-    import overmind
-
-    overmind.init(service_name="verify-agent")
 
     responses = {
         "demo-1": {

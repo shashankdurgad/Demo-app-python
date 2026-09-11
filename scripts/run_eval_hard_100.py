@@ -33,16 +33,10 @@ def main() -> None:
     )
     from invoice_agent.agent.langfuse_tracing import configure_langfuse, flush_langfuse
     from invoice_agent.agent.llm import get_llm_status
-    from invoice_agent.agent.overmind_tracing import (
-        TRIAGE_AGENT_ID,
-        TRIAGE_AGENT_NAME,
-        configure_overmind,
-    )
     from invoice_agent.agent.tracing import flush_langsmith
     from invoice_agent.agent.triage import analyze_email
     from invoice_agent.agent import triage as triage_mod
     from invoice_agent.eval_hard_emails import EVAL_HARD_CASES
-    import overmind
 
     status = get_llm_status()
     model = status.get("model")
@@ -52,17 +46,10 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    if not os.environ.get("OVERMIND_API_KEY"):
-        print("Hard failure: OVERMIND_API_KEY is not set", file=sys.stderr)
-        sys.exit(1)
 
-    configure_overmind()
     configure_galileo()
     configure_langfuse()
     configure_braintrust()
-    overmind.set_agent_id(TRIAGE_AGENT_ID)
-    overmind.set_agent_name(TRIAGE_AGENT_NAME)
-    overmind.set_conversation_id(SESSION_ID)
     start_galileo_session(SESSION_ID)
 
     captures: list = []
@@ -139,7 +126,6 @@ def main() -> None:
                 f"isInvoice={row['isInvoice']} conf={row['confidence']}"
             )
 
-    overmind.force_flush_traces()
     flush_galileo()
     flush_langfuse()
     flush_langsmith()

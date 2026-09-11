@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timezone
 
-import overmind
 from braintrust import traced
 from galileo import log
 from langfuse import observe
@@ -15,11 +14,6 @@ from invoice_agent.agent.braintrust_tracing import configure_braintrust
 from invoice_agent.agent.galileo_tracing import configure_galileo
 from invoice_agent.agent.langfuse_tracing import configure_langfuse
 from invoice_agent.agent.llm import chat_json
-from invoice_agent.agent.overmind_tracing import (
-    PLANNER_AGENT_ID,
-    PLANNER_AGENT_NAME,
-    configure_overmind,
-)
 from invoice_agent.types import (
     CurrencyTotal,
     InvoiceRecord,
@@ -83,7 +77,6 @@ def _fallback_priority(invoice: InvoiceRecord, today: date) -> tuple[Priority, s
     return "schedule", f"Due in {days} day(s); queue for the next payment run."
 
 
-@overmind.function(name="fallback_plan")
 def _fallback_plan(invoices: list[InvoiceRecord], reason: str) -> PaymentPlan:
     today = _today()
     items = []
@@ -108,7 +101,6 @@ def _fallback_plan(invoices: list[InvoiceRecord], reason: str) -> PaymentPlan:
     )
 
 
-@overmind.function(name="compute_currency_totals")
 def _totals(invoices: list[InvoiceRecord]) -> list[CurrencyTotal]:
     """Sum amounts per currency in Python — never trust the LLM with arithmetic."""
     sums: dict[str, float] = {}
@@ -156,7 +148,6 @@ def _planner_input(invoices: list[InvoiceRecord], today: date | None = None) -> 
 @traced(name="plan_payments_llm")
 @observe(name="plan-payments-llm", as_type="span")
 @log(span_type="workflow", name="plan_payments_llm")
-@overmind.workflow(name="plan_payments_llm")
 @traceable(name="plan_payments_llm", tags=["planner"])
 def _plan_core(invoices: list[InvoiceRecord]) -> PaymentPlan:
     today = _today()
@@ -239,7 +230,6 @@ Invoices:
 @traced(name="plan_payments")
 @observe(name="plan-payments", as_type="agent")
 @log(span_type="agent", name="plan_payments")
-@overmind.entry_point(name="plan_payments")
 @traceable(name="plan_payments", tags=["planner"])
 def _plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
     considered = sorted(invoices, key=lambda inv: inv.due_date or "9999-12-31")
@@ -256,18 +246,12 @@ def _plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
         return _plan_core(considered)
     except Exception as exc:
         # A broken plan must not fail a scan that already produced invoices.
-        overmind.capture_exception(exc)
         return _fallback_plan(considered, str(exc))
 
 
 def plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
     """Second agent: rank the triaged invoices into pay now / schedule / hold."""
-    configure_overmind()
     configure_galileo()
     configure_langfuse()
     configure_braintrust()
-    # Both agents share this process, so re-stamp identity before the span opens
-    # or the planner's spans inherit the triage agent's id.
-    overmind.set_agent_id(PLANNER_AGENT_ID)
-    overmind.set_agent_name(PLANNER_AGENT_NAME)
     return _plan_payments(invoices)

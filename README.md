@@ -154,8 +154,7 @@ The same arguments always return the same output so eval replay is stable.
 
 Trace-producing runs pin **gpt-5.6** via `ADJUDICATOR_MODEL` (default `gpt-5.6`).
 This is independent of `OPENAI_MODEL`, which remains the triage/planner default
-(`gpt-5.2`). Overmind tracing needs `OVERMIND_API_KEY` (and `OVERMIND_API_URL` if
-you are not using the hosted endpoint).
+(`gpt-5.2`).
 
 ```bash
 python -m scripts.run_adjudicator_100 --check-tools   # fixture determinism, no LLM
@@ -165,8 +164,7 @@ python -m scripts.run_adjudicator_100                 # 100 claims + sidecar JSO
 ```
 
 The sidecar is written to `artifacts/adjudicator-100.jsonl` (claim input +
-constructed ground truth + model output). One Overmind root trace is emitted per
-claim.
+constructed ground truth + model output).
 
 A disjoint eval corpus (`CLM-E-*`, session `adjudicator-eval-100-YYYYMMDD`) is
 run separately so train and eval never share claim ids or traces:

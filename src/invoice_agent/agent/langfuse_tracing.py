@@ -4,11 +4,11 @@ Follows ``add_langfuse_for_multi_agent`` and the Langfuse instrumentation skill:
 init after env is loaded, mask PII, OpenAI drop-in for generations, ``flush()``
 on short scripts.
 
-Sits alongside LangSmith, Overmind, Galileo, and Braintrust. Enabled when both
+Sits alongside LangSmith, Galileo, and Braintrust. Enabled when both
 ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` are set.
 
-Langfuse SDK v4 shares the process-wide OpenTelemetry context with Overmind, so
-child observations would otherwise parent to Overmind span ids that Langfuse
+Langfuse SDK v4 shares process-wide OpenTelemetry context with other OTel
+backends, so child observations would otherwise parent to span ids Langfuse
 never ingested. We give Langfuse its own TracerProvider and re-parent new
 Langfuse observations under the last Langfuse span.
 """
@@ -82,7 +82,7 @@ def _use_langfuse_parent() -> Iterator[None]:
         and current is not trace.INVALID_SPAN
         and current.is_recording()
     ):
-        # Overmind/Galileo/etc. is current; do not use that id as a Langfuse parent.
+        # Another OTel backend is current; do not use that id as a Langfuse parent.
         parent = trace.INVALID_SPAN
     else:
         yield
@@ -130,8 +130,8 @@ def _install_parent_isolation() -> None:
                     stack_token = _LANGFUSE_SPAN_STACK.set(
                         _LANGFUSE_SPAN_STACK.get() + (span,)
                     )
-                # Put Overmind (or whoever was current) back so their child
-                # spans keep a valid parent. Langfuse children read the stack.
+                # Put the previous current span back so other backends keep a
+                # valid parent. Langfuse children read the stack.
                 restore = otel_context.attach(trace.set_span_in_context(previous))
                 try:
                     yield observation
@@ -173,8 +173,8 @@ def configure_langfuse() -> None:
                 "secret_key": os.environ["LANGFUSE_SECRET_KEY"],
                 "mask": _masking_function,
                 "environment": os.environ["LANGFUSE_TRACING_ENVIRONMENT"],
-                # Keep Langfuse off Overmind's global TracerProvider so
-                # Overmind OpenAI spans are not also ingested as observations.
+                # Keep Langfuse off any other global TracerProvider so
+                # foreign OpenAI spans are not also ingested as observations.
                 "tracer_provider": TracerProvider(),
             }
             if base_url:
