@@ -38,7 +38,52 @@ LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com
 
 If `LANGSMITH_API_KEY` is set and `LANGSMITH_TRACING` is omitted, tracing is enabled and traces go to project `ledgerline`. Set `LANGSMITH_TRACING=false` to disable.
 
+The OpenAI client is wrapped with `langsmith.wrappers.wrap_openai`. Nested `@traceable` spans cover the orchestrator (`run_ledgerline`), triage, planner, adjudicator, tools, and LLM helpers. Short scripts set `LANGCHAIN_CALLBACKS_BACKGROUND=false` and call `flush_langsmith()` so runs finish uploading before exit.
+
 A `403 Forbidden` on `api.smith.langchain.com` usually means an EU key was sent to the US endpoint — set `LANGSMITH_ENDPOINT` as above.
+
+Optional Galileo tracing (nested agent / workflow / tool / LLM spans in [Galileo](https://app.galileo.ai/)):
+
+```bash
+GALILEO_API_KEY=your-galileo-api-key
+GALILEO_PROJECT=demo app
+GALILEO_LOG_STREAM=demo app
+```
+
+The OpenAI client is wrapped with Galileo's SDK so every `chat.completions` call is an LLM span. Agent entry points and adjudicator tools are also `@log`-decorated. Set `GALILEO_LOGGING_DISABLED=true` to turn it off. Custom Galileo deployments need `GALILEO_CONSOLE_URL`.
+
+Optional Langfuse tracing (nested `@observe` spans + OpenAI generations in [Langfuse](https://cloud.langfuse.com/)):
+
+```bash
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_TRACING_ENVIRONMENT=development
+```
+
+One scan is one Langfuse trace, with both agents nested under the orchestrator:
+
+```
+scan-inbox            (agent)
+├── triage-invoices   (agent)
+│   └── analyze-email (span)          one per email
+│       └── classify-invoice (generation)
+└── plan-payments     (agent)
+    └── rank-invoices (generation)
+```
+
+Set `LANGFUSE_TRACING_ENABLED=false` to turn it off. US cloud is `https://us.cloud.langfuse.com`. Emails and card-like numbers are masked before they leave the process.
+
+Optional Braintrust tracing (`init_logger` + `auto_instrument` + `@traced` spans in [Braintrust](https://www.braintrust.dev/)):
+
+```bash
+BRAINTRUST_API_KEY=sk-...
+BRAINTRUST_API_URL=https://api-eu.braintrust.dev
+BRAINTRUST_PROJECT=My Project
+BRAINTRUST_PROJECT_ID=b9a5698f-8159-4af9-bb06-844496357d5f
+```
+
+Omit `BRAINTRUST_API_URL` for the US API (`https://api.braintrust.dev`). Set `BRAINTRUST_TRACING=false` to turn it off.
 
 Or for a fully local model:
 

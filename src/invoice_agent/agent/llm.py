@@ -12,6 +12,9 @@ import overmind
 from langsmith import traceable
 from openai import OpenAI
 
+from invoice_agent.agent.braintrust_tracing import braintrust_enabled, configure_braintrust
+from invoice_agent.agent.galileo_tracing import configure_galileo
+from invoice_agent.agent.langfuse_tracing import configure_langfuse, langfuse_enabled
 from invoice_agent.agent.overmind_tracing import configure_overmind
 from invoice_agent.agent.tracing import configure_tracing, tracing_enabled
 from invoice_agent.types import LlmExtraction
@@ -149,6 +152,9 @@ def _get_openai_client(endpoint: LlmEndpoint) -> OpenAI:
     configure_tracing()
     # Must run before the client is constructed so the OpenAI SDK is patched.
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     client = OpenAI(
         api_key=endpoint.api_key,
         base_url=endpoint.base_url,
@@ -194,6 +200,7 @@ def chat_json(
     *,
     system_prompt: str,
     user_prompt: str,
+    span_name: str,
     temperature: float = 0,
 ) -> dict:
     """Run one JSON-mode chat completion and return the parsed object."""
@@ -208,6 +215,12 @@ def chat_json(
         ],
         "response_format": {"type": "json_object"},
     }
+    if langfuse_enabled():
+        create_kwargs["name"] = span_name
+        create_kwargs["metadata"] = {"provider": endpoint.provider}
+    if braintrust_enabled():
+        # Braintrust consumes span_info to name the span; it never reaches OpenAI.
+        create_kwargs["span_info"] = {"name": span_name}
     if _supports_temperature(endpoint.model):
         create_kwargs["temperature"] = temperature
 
@@ -261,6 +274,11 @@ def create_chat_completion(
             create_kwargs["reasoning_effort"] = "none"
     if _supports_temperature(endpoint.model):
         create_kwargs["temperature"] = temperature
+    if langfuse_enabled():
+        create_kwargs["name"] = "adjudicate-llm"
+        create_kwargs["metadata"] = {"provider": endpoint.provider}
+    if braintrust_enabled():
+        create_kwargs["span_info"] = {"name": "adjudicate-llm"}
 
     try:
         response = client.chat.completions.create(**create_kwargs)
@@ -322,6 +340,7 @@ Body / attachments text:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        span_name="classify-invoice",
     )
 
     # Some models return confidence as 0–100; normalize to 0–1 for the schema.

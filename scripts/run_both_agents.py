@@ -45,10 +45,28 @@ def main() -> None:
     load_env_local()
     require_llm_env()
 
+    from invoice_agent.agent.braintrust_tracing import (
+        configure_braintrust,
+        flush_braintrust,
+    )
+    from invoice_agent.agent.galileo_tracing import (
+        configure_galileo,
+        flush_galileo,
+        start_galileo_session,
+    )
+    from invoice_agent.agent.langfuse_tracing import (
+        configure_langfuse,
+        flush_langfuse,
+    )
     from invoice_agent.agent.llm import get_llm_status
-    from invoice_agent.agent.planner import plan_payments
-    from invoice_agent.agent.triage import run_invoice_agent
+    from invoice_agent.agent.tracing import flush_langsmith
+    from invoice_agent.agent.triage import run_ledgerline
     from invoice_agent.demo_emails import DEMO_EMAILS
+
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
+    start_galileo_session("run-both-agents")
 
     emails = DEMO_EMAILS[: args.limit] if args.limit else list(DEMO_EMAILS)
     if not emails:
@@ -62,11 +80,16 @@ def main() -> None:
     )
 
     try:
-        invoices = run_invoice_agent(emails, "demo")
+        run = run_ledgerline(emails, "demo")
     except Exception as err:
-        print(f"Hard failure in invoice triage: {err}", file=sys.stderr)
+        print(f"Hard failure in the agent run: {err}", file=sys.stderr)
+        flush_galileo()
+        flush_langfuse()
+        flush_langsmith()
+        flush_braintrust()
         sys.exit(1)
 
+    invoices = run.invoices
     for invoice in invoices:
         print(
             f"  {invoice.vendor:<28} {_money(invoice.amount):>16}  "
@@ -78,7 +101,7 @@ def main() -> None:
     )
 
     print(f"Agent 2/2 — payment planner: ranking {len(invoices)} invoices\n")
-    plan = plan_payments(invoices)
+    plan = run.plan
 
     print(f"  {plan.summary}")
     if plan.totals:
@@ -109,6 +132,10 @@ def main() -> None:
             indent=2,
         ))
 
+    flush_galileo()
+    flush_langfuse()
+    flush_langsmith()
+    flush_braintrust()
     sys.exit(0)
 
 

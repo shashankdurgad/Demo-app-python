@@ -7,8 +7,14 @@ from typing import Literal
 from uuid import uuid4
 
 import overmind
+from braintrust import traced
+from galileo import log
+from langfuse import observe
 from langsmith import traceable
 
+from invoice_agent.agent.braintrust_tracing import configure_braintrust
+from invoice_agent.agent.galileo_tracing import configure_galileo, start_galileo_session
+from invoice_agent.agent.langfuse_tracing import configure_langfuse
 from invoice_agent.agent.llm import analyze_email_with_llm, require_llm_configured
 from invoice_agent.agent.overmind_tracing import (
     TRIAGE_AGENT_ID,
@@ -47,6 +53,9 @@ def _received_at(date_str: str) -> str:
             return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+@traced(name="analyze_email")
+@observe(name="analyze-email", as_type="span")
+@log(span_type="agent", name="analyze_email")
 @overmind.entry_point(name="analyze_email")
 @traceable(name="analyze_email", tags=["triage"])
 def analyze_email(
@@ -100,6 +109,9 @@ def analyze_email(
     )
 
 
+@traced(name="run_invoice_agent")
+@observe(name="triage-invoices", as_type="agent")
+@log(span_type="workflow", name="run_invoice_agent")
 @traceable(name="run_invoice_agent", tags=["triage"])
 def run_invoice_agent(
     emails: list[RawEmail],
@@ -108,6 +120,9 @@ def run_invoice_agent(
     """Triage agent: extract invoice records from a batch of emails."""
     configure_tracing()
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     # Stamped before the first analyze_email span opens; the batch itself is
     # deliberately not a span so each email becomes its own root trace.
     overmind.set_agent_id(TRIAGE_AGENT_ID)
@@ -123,6 +138,9 @@ def run_invoice_agent(
     return invoices
 
 
+@traced(name="run_ledgerline")
+@observe(name="scan-inbox", as_type="agent")
+@log(span_type="workflow", name="run_ledgerline")
 @traceable(name="run_ledgerline", tags=["ledgerline"])
 def run_ledgerline(
     emails: list[RawEmail],
@@ -131,7 +149,12 @@ def run_ledgerline(
     """Both agents in sequence: triage extracts invoices, the planner prioritizes them."""
     configure_tracing()
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     # Each agent emits its own trace; a per-scan id groups them into one session.
-    overmind.set_conversation_id(f"scan-{uuid4()}")
+    scan_id = f"scan-{uuid4()}"
+    overmind.set_conversation_id(scan_id)
+    start_galileo_session(scan_id)
     invoices = run_invoice_agent(emails, source)
     return LedgerlineResult(invoices=invoices, plan=plan_payments(invoices))

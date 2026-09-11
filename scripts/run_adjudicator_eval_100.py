@@ -58,8 +58,16 @@ def main() -> None:
         sys.exit(1)
 
     from invoice_agent.agent.adjudicator import adjudicate_claim
+    from invoice_agent.agent.galileo_tracing import (
+        configure_galileo,
+        flush_galileo,
+        start_galileo_session,
+    )
+    from invoice_agent.agent.braintrust_tracing import configure_braintrust, flush_braintrust
+    from invoice_agent.agent.langfuse_tracing import configure_langfuse, flush_langfuse
     from invoice_agent.agent.llm import get_adjudicator_llm_status
     from invoice_agent.agent.overmind_tracing import configure_overmind
+    from invoice_agent.agent.tracing import flush_langsmith
     from invoice_agent.adjudicator_eval_claims import ADJUDICATOR_EVAL_CASES
     import overmind
 
@@ -88,7 +96,11 @@ def main() -> None:
         sys.exit(1)
 
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     overmind.set_conversation_id(session_id)
+    start_galileo_session(session_id)
 
     sidecar_path: Path = args.sidecar
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +156,10 @@ def main() -> None:
             )
 
     overmind.force_flush_traces()
+    flush_galileo()
+    flush_langfuse()
+    flush_langsmith()
+    flush_braintrust()
 
     expected_decisions = Counter(r["expected"]["decision"] for r in rows)
     model_decisions = Counter(r["model_output"]["decision"] for r in rows)

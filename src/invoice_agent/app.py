@@ -8,6 +8,13 @@ from typing import Literal
 from urllib.parse import quote
 
 from dotenv import load_dotenv
+
+# Load env before tracing SDKs import so EU endpoints (Braintrust, LangSmith)
+# are visible if those libraries initialize on import.
+_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_ROOT / ".env")
+load_dotenv(_ROOT / ".env.local", override=True)
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -16,9 +23,12 @@ from pydantic import BaseModel, Field
 
 import overmind
 
+from invoice_agent.agent.braintrust_tracing import configure_braintrust, flush_braintrust
+from invoice_agent.agent.galileo_tracing import configure_galileo, flush_galileo, start_galileo_session
+from invoice_agent.agent.langfuse_tracing import configure_langfuse, flush_langfuse
 from invoice_agent.agent.llm import get_llm_status, is_llm_configured
 from invoice_agent.agent.overmind_tracing import configure_overmind
-from invoice_agent.agent.tracing import configure_tracing
+from invoice_agent.agent.tracing import configure_tracing, flush_langsmith
 from invoice_agent.agent.triage import run_ledgerline
 from invoice_agent.agent.adjudicator import adjudicate_claim
 from invoice_agent.demo_emails import DEMO_EMAILS
@@ -32,12 +42,11 @@ from invoice_agent.gmail import (
 from invoice_agent.session import clear_session, read_session, write_session
 from invoice_agent.types import AuthStatus, ExpenseClaim, ScanResult
 
-# Load .env.local then .env (local overrides)
-_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(_ROOT / ".env")
-load_dotenv(_ROOT / ".env.local", override=True)
 configure_tracing()
 configure_overmind()
+configure_galileo()
+configure_langfuse()
+configure_braintrust()
 
 TEMPLATES_DIR = _ROOT / "templates"
 STATIC_DIR = _ROOT / "static"
@@ -175,6 +184,10 @@ async def scan(request: Request) -> JSONResponse:
                     .replace("+00:00", "Z"),
                 }
             )
+            flush_galileo()
+            flush_langfuse()
+            flush_langsmith()
+            flush_braintrust()
             return JSONResponse(result.model_dump(by_alias=True))
 
         session = read_session(request)
@@ -201,6 +214,10 @@ async def scan(request: Request) -> JSONResponse:
                 .replace("+00:00", "Z"),
             }
         )
+        flush_galileo()
+        flush_langfuse()
+        flush_langsmith()
+        flush_braintrust()
         return JSONResponse(result.model_dump(by_alias=True))
     except Exception as err:
         message = str(err) if err else "Failed to run invoice LLM agent"
@@ -222,8 +239,14 @@ async def adjudicate(claim: ExpenseClaim) -> JSONResponse:
     try:
         from uuid import uuid4
 
-        overmind.set_conversation_id(f"adjudicate-{uuid4()}")
+        session_id = f"adjudicate-{uuid4()}"
+        overmind.set_conversation_id(session_id)
+        start_galileo_session(session_id)
         result = adjudicate_claim(claim)
+        flush_galileo()
+        flush_langfuse()
+        flush_langsmith()
+        flush_braintrust()
         return JSONResponse(result.model_dump())
     except Exception as err:
         message = str(err) if err else "Failed to adjudicate claim"
@@ -233,6 +256,10 @@ async def adjudicate(claim: ExpenseClaim) -> JSONResponse:
 @app.on_event("shutdown")
 async def _flush_traces() -> None:
     overmind.force_flush_traces()
+    flush_galileo()
+    flush_langfuse()
+    flush_langsmith()
+    flush_braintrust()
 
 
 def create_app() -> FastAPI:

@@ -25,12 +25,20 @@ def main() -> None:
     require_llm_env()
     os.environ["OPENAI_MODEL"] = TEACHER_MODEL
 
+    from invoice_agent.agent.braintrust_tracing import configure_braintrust, flush_braintrust
+    from invoice_agent.agent.galileo_tracing import (
+        configure_galileo,
+        flush_galileo,
+        start_galileo_session,
+    )
+    from invoice_agent.agent.langfuse_tracing import configure_langfuse, flush_langfuse
     from invoice_agent.agent.llm import get_llm_status
     from invoice_agent.agent.overmind_tracing import (
         TRIAGE_AGENT_ID,
         TRIAGE_AGENT_NAME,
         configure_overmind,
     )
+    from invoice_agent.agent.tracing import flush_langsmith
     from invoice_agent.agent.triage import analyze_email
     from invoice_agent.agent import triage as triage_mod
     from invoice_agent.eval_hard_emails import EVAL_HARD_CASES
@@ -49,9 +57,13 @@ def main() -> None:
         sys.exit(1)
 
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     overmind.set_agent_id(TRIAGE_AGENT_ID)
     overmind.set_agent_name(TRIAGE_AGENT_NAME)
     overmind.set_conversation_id(SESSION_ID)
+    start_galileo_session(SESSION_ID)
 
     captures: list = []
     orig = triage_mod.analyze_email_with_llm
@@ -128,6 +140,10 @@ def main() -> None:
             )
 
     overmind.force_flush_traces()
+    flush_galileo()
+    flush_langfuse()
+    flush_langsmith()
+    flush_braintrust()
     confs = [float(r["confidence"]) for r in rows]
     print("\nLocal teacher summary")
     print(f"  rows: {len(rows)}")

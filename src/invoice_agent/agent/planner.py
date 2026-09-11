@@ -6,8 +6,14 @@ import json
 from datetime import date, datetime, timezone
 
 import overmind
+from braintrust import traced
+from galileo import log
+from langfuse import observe
 from langsmith import traceable
 
+from invoice_agent.agent.braintrust_tracing import configure_braintrust
+from invoice_agent.agent.galileo_tracing import configure_galileo
+from invoice_agent.agent.langfuse_tracing import configure_langfuse
 from invoice_agent.agent.llm import chat_json
 from invoice_agent.agent.overmind_tracing import (
     PLANNER_AGENT_ID,
@@ -147,6 +153,9 @@ def _planner_input(invoices: list[InvoiceRecord], today: date | None = None) -> 
     ]
 
 
+@traced(name="plan_payments_llm")
+@observe(name="plan-payments-llm", as_type="span")
+@log(span_type="workflow", name="plan_payments_llm")
 @overmind.workflow(name="plan_payments_llm")
 @traceable(name="plan_payments_llm", tags=["planner"])
 def _plan_core(invoices: list[InvoiceRecord]) -> PaymentPlan:
@@ -179,6 +188,7 @@ Invoices:
     parsed = chat_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        span_name="rank-invoices",
         temperature=0.1,
     )
     llm_plan = LlmPaymentPlan.model_validate(parsed)
@@ -226,6 +236,9 @@ Invoices:
     )
 
 
+@traced(name="plan_payments")
+@observe(name="plan-payments", as_type="agent")
+@log(span_type="agent", name="plan_payments")
 @overmind.entry_point(name="plan_payments")
 @traceable(name="plan_payments", tags=["planner"])
 def _plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
@@ -250,6 +263,9 @@ def _plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
 def plan_payments(invoices: list[InvoiceRecord]) -> PaymentPlan:
     """Second agent: rank the triaged invoices into pay now / schedule / hold."""
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     # Both agents share this process, so re-stamp identity before the span opens
     # or the planner's spans inherit the triage agent's id.
     overmind.set_agent_id(PLANNER_AGENT_ID)

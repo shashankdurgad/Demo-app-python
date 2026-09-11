@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 
 import overmind
+from braintrust import traced
+from galileo import log
+from langfuse import observe
 from langsmith import traceable
 
 from invoice_agent.agent.adjudicator_tools import OPENAI_TOOLS, AdjudicatorTools
+from invoice_agent.agent.braintrust_tracing import configure_braintrust
+from invoice_agent.agent.galileo_tracing import configure_galileo
+from invoice_agent.agent.langfuse_tracing import configure_langfuse
 from invoice_agent.agent.llm import (
     _extract_json_object,
     create_chat_completion,
@@ -105,7 +111,11 @@ def _parse_adjudication(raw: dict) -> Adjudication:
     return Adjudication.model_validate(raw)
 
 
+@traced(name="adjudicate_tool_loop")
+@observe(name="adjudicate-tool-loop", as_type="span")
+@log(span_type="workflow", name="adjudicate_tool_loop")
 @overmind.workflow(name="adjudicate_tool_loop")
+@traceable(name="adjudicate_tool_loop", tags=["adjudicator"])
 def _run_tool_loop(claim: ExpenseClaim) -> Adjudication:
     tools = AdjudicatorTools()
     messages: list[dict] = [
@@ -158,6 +168,9 @@ def _run_tool_loop(claim: ExpenseClaim) -> Adjudication:
     return _parse_adjudication(parsed)
 
 
+@traced(name="adjudicate_claim")
+@observe(name="adjudicate-claim", as_type="agent")
+@log(span_type="agent", name="adjudicate_claim")
 @overmind.entry_point(name="adjudicate_claim")
 @traceable(name="adjudicate_claim", tags=["adjudicator"])
 def _adjudicate_claim(claim: ExpenseClaim) -> Adjudication:
@@ -167,6 +180,9 @@ def _adjudicate_claim(claim: ExpenseClaim) -> Adjudication:
 def adjudicate_claim(claim: ExpenseClaim) -> Adjudication:
     """Public entry: stamp identity, then one root trace per claim."""
     configure_overmind()
+    configure_galileo()
+    configure_langfuse()
+    configure_braintrust()
     stamp_adjudicator_identity()
     require_llm_configured()
     return _adjudicate_claim(claim)
