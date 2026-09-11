@@ -175,6 +175,145 @@ def main() -> None:
         },
     )
 
+    # Adjudicator: mocked tool loop (lookup → post_decision → JSON).
+    from invoice_agent.agent.adjudicator import adjudicate_claim
+    from invoice_agent.types import ExpenseClaim
+
+    claim = ExpenseClaim(
+        claim_id="CLM-TEST",
+        submitter_id="emp-clean-00",
+        submitter_name="Test User",
+        category="travel",
+        region="US",
+        merchant="Cedarline Air",
+        claim_date="2026-07-12",
+        submitted_at="2026-08-26",
+        claimed_amount=280.0,
+        claim_currency="USD",
+        reporting_currency="USD",
+        receipt_text=(
+            "Cedarline Air\nDate: 2026-07-12\nItem: flight\nTotal: USD 280.00\n"
+        ),
+        notes="Return flight",
+    )
+    adjudication = {
+        "reimbursable": True,
+        "decision": "approve",
+        "policy_clause": "TRV-04",
+        "approved_amount": 280.0,
+        "reporting_currency": "USD",
+        "fx_rate_used": 1.0,
+        "effective_date": "2025-01-01",
+        "receipt_required": True,
+        "rationale": "Within TRV-04 cap after policy and FX lookup.",
+        "confidence": 0.93,
+    }
+    adj_round = 0
+
+    def _tool_call(call_id: str, name: str, arguments: dict) -> Any:
+        return SimpleNamespace(
+            id=call_id,
+            function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+        )
+
+    def fake_adjudicate_create(**kwargs: Any) -> Any:
+        nonlocal adj_round
+        tools = kwargs.get("tools")
+        if tools and adj_round == 0:
+            adj_round += 1
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                _tool_call(
+                                    "call-policy",
+                                    "lookup_policy",
+                                    {
+                                        "category": "travel",
+                                        "region": "US",
+                                        "claim_date": "2026-07-12",
+                                    },
+                                ),
+                                _tool_call(
+                                    "call-hist",
+                                    "get_submitter_history",
+                                    {"submitter_id": "emp-clean-00"},
+                                ),
+                                _tool_call(
+                                    "call-fx",
+                                    "get_fx_rate",
+                                    {
+                                        "from_currency": "USD",
+                                        "to_currency": "USD",
+                                        "date": "2026-07-12",
+                                    },
+                                ),
+                            ],
+                        )
+                    )
+                ]
+            )
+        if tools and adj_round == 1:
+            adj_round += 1
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                _tool_call(
+                                    "call-post",
+                                    "post_decision",
+                                    {
+                                        "claim_id": "CLM-TEST",
+                                        "decision": "approve",
+                                        "approved_amount": 280.0,
+                                        "policy_clause": "TRV-04",
+                                        "rationale": "Within cap",
+                                    },
+                                ),
+                            ],
+                        )
+                    )
+                ]
+            )
+        adj_round += 1
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(adjudication),
+                        tool_calls=None,
+                    )
+                )
+            ]
+        )
+
+    adj_client = MagicMock()
+    adj_client.chat.completions.create.side_effect = fake_adjudicate_create
+    with patch("invoice_agent.agent.llm.OpenAI", return_value=adj_client):
+        result = adjudicate_claim(claim)
+
+    assert adj_round == 3, f"expected 3 LLM rounds, got {adj_round}"
+    assert result.decision == "approve"
+    assert result.reimbursable is True
+    assert result.policy_clause == "TRV-04"
+    assert result.approved_amount == 280.0
+    assert adj_client.chat.completions.create.call_count == 3
+    first_kwargs = adj_client.chat.completions.create.call_args_list[0].kwargs
+    assert first_kwargs.get("tools"), "first round must advertise tools"
+    print(
+        "Adjudicator verification passed:",
+        {
+            "decision": result.decision,
+            "policy_clause": result.policy_clause,
+            "approved_amount": result.approved_amount,
+            "tool_rounds": adj_round - 1,
+        },
+    )
+
 
 if __name__ == "__main__":
     main()

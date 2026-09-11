@@ -36,6 +36,8 @@ run-250-emails = "scripts.run_250_emails:main"
 run-themes = "scripts.run_themes_corpus:main"
 run-eval-50 = "scripts.run_eval_50:main"
 run-eval-50b = "scripts.run_eval_50b:main"
+run-adjudicator-100 = "scripts.run_adjudicator_100:main"
+run-adjudicator-eval-100 = "scripts.run_adjudicator_eval_100:main"
 dev = "invoice_agent.__main__:main"
 
 [tool.hatch.build.targets.wheel]

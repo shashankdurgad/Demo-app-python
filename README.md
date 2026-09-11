@@ -5,6 +5,7 @@ Local FastAPI app that connects to Gmail with **read-only** access and uses an *
 - triage which emails are invoices
 - extract how much each invoice is for
 - extract when payment is due
+- adjudicate expense claims with policy / FX / history tool calls
 
 There is no heuristic fallback — scanning requires a model API key (or local Ollama).
 
@@ -64,7 +65,7 @@ Tokens are stored in an encrypted httpOnly session cookie on your machine.
 
 ## How the agents work
 
-Two agents run in sequence on every scan.
+Two agents run in sequence on every invoice scan. A third agent adjudicates expense claims.
 
 **1. Invoice triage** (`invoice_agent.agent.triage`)
 
@@ -83,6 +84,43 @@ Two agents run in sequence on every scan.
 The planner never fails a scan: if its call or JSON is unusable, it falls back to
 deterministic due-date rules and marks the plan `source` as `fallback`.
 
+**3. Expense adjudicator** (`invoice_agent.agent.adjudicator`)
+
+A third agent decides whether a submitted expense claim is reimbursable. Unlike
+triage and the planner, it is multi-step: the model must call tools to retrieve
+the policy clause, an FX rate, and submitter history, then `post_decision`
+before returning JSON (`approve` / `partial` / `reject` / `escalate`).
+
+Tools are backed by a deterministic in-repo fixture store
+(`adjudicator_fixtures.py`). The same arguments always return the same output
+so eval replay is stable.
+
+Pin a different model with `ADJUDICATOR_MODEL` if you want; otherwise it uses
+the same model as triage/planner.
+
+```bash
+python -m scripts.run_adjudicator_100 --check-tools   # fixture determinism, no LLM
+python -m scripts.run_adjudicator_100 --limit 5
+python -m scripts.run_adjudicator_100                 # 100 claims + sidecar JSONL
+# or: make run-adjudicator-100
+```
+
+The sidecar is written to `artifacts/adjudicator-100.jsonl` (claim input +
+constructed ground truth + model output).
+
+A disjoint eval corpus (`CLM-E-*`) is run separately so train and eval never
+share claim ids:
+
+```bash
+python -m scripts.run_adjudicator_eval_100 --limit 5
+python -m scripts.run_adjudicator_eval_100
+# or: make run-adjudicator-eval-100
+```
+
+The eval sidecar is `artifacts/adjudicator-eval-100.jsonl`.
+
+HTTP: `POST /api/adjudicate` with an `ExpenseClaim` JSON body.
+
 ## Scripts
 
 ```bash
@@ -92,9 +130,11 @@ run-20-emails     # handcrafted demo corpus through analyze_email
 run-100-emails    # generated corpus (DEMO_EMAIL_COUNT or 100)
 run-250-emails    # generated corpus (DEMO_EMAIL_COUNT or 250)
 run-themes        # themes stress harness (prefers Ollama when set)
-run-eval-50       # gold eval A (50 scenarios)
-run-eval-50b      # gold eval B (50 scenarios)
-dev               # uvicorn with reload on :8000
+run-eval-50              # gold eval A (50 scenarios)
+run-eval-50b             # gold eval B (50 scenarios)
+run-adjudicator-100      # expense adjudicator train 100
+run-adjudicator-eval-100 # disjoint eval 100 (same mix, new claim ids)
+dev                      # uvicorn with reload on :8000
 ```
 
 Or via module:
@@ -102,6 +142,8 @@ Or via module:
 ```bash
 python -m scripts.verify_agent
 python -m scripts.run_both_agents --limit 6
+python -m scripts.run_adjudicator_100 --limit 5
+python -m scripts.run_adjudicator_eval_100 --limit 5
 ```
 
 ## API
@@ -113,3 +155,4 @@ python -m scripts.run_both_agents --limit 6
 | POST | `/api/auth/logout` | Clear session |
 | GET | `/api/auth/status` | Auth + LLM status JSON |
 | POST | `/api/scan` | `{mode?: "gmail"\|"demo"}` → scan result |
+| POST | `/api/adjudicate` | Expense claim JSON → adjudication |

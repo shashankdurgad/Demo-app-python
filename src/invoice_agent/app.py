@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from invoice_agent.agent.adjudicator import adjudicate_claim
 from invoice_agent.agent.llm import get_llm_status, is_llm_configured
 from invoice_agent.agent.triage import run_ledgerline
 from invoice_agent.demo_emails import DEMO_EMAILS
@@ -25,7 +26,7 @@ from invoice_agent.gmail import (
     is_google_configured,
 )
 from invoice_agent.session import clear_session, read_session, write_session
-from invoice_agent.types import AuthStatus, ScanResult
+from invoice_agent.types import AuthStatus, ExpenseClaim, ScanResult
 
 # Load .env.local then .env (local overrides)
 _ROOT = Path(__file__).resolve().parents[2]
@@ -197,6 +198,26 @@ async def scan(request: Request) -> JSONResponse:
         return JSONResponse(result.model_dump(by_alias=True))
     except Exception as err:
         message = str(err) if err else "Failed to run invoice LLM agent"
+        return JSONResponse({"error": message}, status_code=500)
+
+
+@app.post("/api/adjudicate")
+async def adjudicate(claim: ExpenseClaim) -> JSONResponse:
+    if not is_llm_configured():
+        return JSONResponse(
+            {
+                "error": (
+                    "LLM required. Add OPENAI_API_KEY or OLLAMA_BASE_URL to "
+                    ".env.local and restart."
+                )
+            },
+            status_code=400,
+        )
+    try:
+        result = adjudicate_claim(claim)
+        return JSONResponse(result.model_dump())
+    except Exception as err:
+        message = str(err) if err else "Failed to adjudicate claim"
         return JSONResponse({"error": message}, status_code=500)
 
 

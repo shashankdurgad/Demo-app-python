@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from openai import OpenAI
@@ -107,6 +107,45 @@ def get_llm_status() -> dict[str, Any]:
     }
 
 
+def get_adjudicator_model() -> str:
+    return os.environ.get("ADJUDICATOR_MODEL") or os.environ.get(
+        "OPENAI_MODEL", "gpt-4o-mini"
+    )
+
+
+def get_adjudicator_endpoint() -> LlmEndpoint:
+    """Same client construction as triage, with an optional adjudicator model pin."""
+    base = get_llm_endpoint()
+    pinned = os.environ.get("ADJUDICATOR_MODEL")
+    if pinned:
+        return replace(base, model=pinned)
+    return base
+
+
+def get_adjudicator_llm_status() -> dict[str, Any]:
+    if not is_llm_configured():
+        return {"configured": False, "provider": None, "model": None}
+    endpoint = get_adjudicator_endpoint()
+    return {
+        "configured": True,
+        "provider": endpoint.provider,
+        "model": endpoint.model,
+    }
+
+
+@dataclass(frozen=True)
+class ChatToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatCompletionMessage:
+    content: str | None
+    tool_calls: list[ChatToolCall]
+
+
 def _get_openai_client(endpoint: LlmEndpoint) -> OpenAI:
     return OpenAI(
         api_key=endpoint.api_key,
@@ -126,6 +165,14 @@ def _extract_json_object(content: str) -> Any:
     return json.loads(match.group(0))
 
 
+def _supports_temperature(model: str) -> bool:
+    """GPT-5 reasoning models reject custom temperature; chat variants allow it."""
+    name = model.split("/")[-1].lower()
+    if name.startswith("gpt-5") and "chat" not in name:
+        return False
+    return True
+
+
 def chat_json(
     *,
     system_prompt: str,
@@ -138,13 +185,14 @@ def chat_json(
 
     create_kwargs: dict[str, Any] = {
         "model": endpoint.model,
-        "temperature": temperature,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "response_format": {"type": "json_object"},
     }
+    if _supports_temperature(endpoint.model):
+        create_kwargs["temperature"] = temperature
 
     try:
         response = client.chat.completions.create(**create_kwargs)
@@ -162,6 +210,60 @@ def chat_json(
     if not isinstance(parsed, dict):
         raise RuntimeError("LLM returned invalid JSON: not an object")
     return parsed
+
+
+def create_chat_completion(
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    temperature: float = 0,
+    tool_choice: str | dict[str, Any] | None = None,
+) -> ChatCompletionMessage:
+    """One chat.completions round, optionally with OpenAI tools."""
+    endpoint = (
+        get_adjudicator_endpoint()
+        if model is None
+        else replace(get_llm_endpoint(), model=model)
+    )
+    client = _get_openai_client(endpoint)
+
+    create_kwargs: dict[str, Any] = {
+        "model": endpoint.model,
+        "messages": messages,
+    }
+    if tools:
+        create_kwargs["tools"] = tools
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+        # gpt-5.x reasoning models reject tools on chat.completions unless
+        # reasoning_effort is none (otherwise they require the Responses API).
+        if not _supports_temperature(endpoint.model):
+            create_kwargs["reasoning_effort"] = "none"
+    if _supports_temperature(endpoint.model):
+        create_kwargs["temperature"] = temperature
+
+    try:
+        response = client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        raise RuntimeError(f"LLM request failed: {exc}") from exc
+
+    if not response.choices:
+        raise RuntimeError("LLM returned no choices.")
+    message = response.choices[0].message
+    tool_calls: list[ChatToolCall] = []
+    for item in getattr(message, "tool_calls", None) or []:
+        function = getattr(item, "function", None)
+        if function is None:
+            continue
+        tool_calls.append(
+            ChatToolCall(
+                id=str(item.id),
+                name=str(function.name),
+                arguments=str(function.arguments or "{}"),
+            )
+        )
+    return ChatCompletionMessage(content=message.content, tool_calls=tool_calls)
 
 
 def analyze_email_with_llm(
